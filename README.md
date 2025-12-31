@@ -5,8 +5,7 @@ Reproductor de música de YouTube para Windows controlado por voz y texto.
 ## 🚀 Requisitos e Instalación
 
 ### 1. Requisitos de Sistema
-(Sólo para vtm_discord.py [Aún no subido]) 
-Es necesario tener instalado **FFmpeg** en el sistema y añadido a las variables de entorno (PATH). Puedes descargarlo desde [ffmpeg.org](https://ffmpeg.org/).
+Es necesario tener instalado Python con pip
 
 ### 2. Instalación de Dependencias
 Asegúrate de tener Python instalado y ejecuta el siguiente comando para instalar las librerías necesarias:
@@ -76,4 +75,5 @@ python vtm.py
 
 ---
 *Desarrollado para facilitar el acceso a la música mediante comandos intuitivos.*
+
 
