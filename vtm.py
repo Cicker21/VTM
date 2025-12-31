@@ -4,6 +4,9 @@ vtm.py — Reproducir música de YouTube mediante comandos de voz o texto (ES)
 Decodificado de vtm_core.py.
 """
 
+VTM_VERSION = "1.0.0"
+UPDATE_URL = "https://raw.githubusercontent.com/Cicker21/VTM/refs/heads/main/vtm.py"
+
 import argparse
 import logging
 import os
@@ -16,6 +19,7 @@ import json
 import uuid
 import re
 import atexit
+import urllib.request
 
 from yt_dlp import YoutubeDL
 from ffpyplayer.player import MediaPlayer
@@ -1670,6 +1674,29 @@ def cli_loop(player: AudioPlayer, open_in_browser: bool, hotword: str | None, vo
             traceback.print_exc()
             time.sleep(0.5)
 
+def check_for_updates():
+    try:
+        logging.info(f"🔍 Comprobando actualizaciones... (Versión actual: {VTM_VERSION})")
+        # Usamos un User-Agent para evitar bloqueos básicos
+        req = urllib.request.Request(UPDATE_URL, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            content = response.read().decode('utf-8')
+            # Buscar VTM_VERSION = "x.x.x" en el contenido remoto
+            match = re.search(r'VTM_VERSION\s*=\s*["\']([^"\']+)["\']', content)
+            if match:
+                remote_version = match.group(1)
+                if remote_version != VTM_VERSION:
+                    print("\n" + "!" * 60)
+                    print(f"🚀 ¡NUEVA VERSIÓN DISPONIBLE EN GITHUB! ({remote_version})")
+                    print(f"   Versión instalada: {VTM_VERSION}")
+                    print(f"   Link: https://github.com/Cicker21/VTM")
+                    print("!" * 60 + "\n")
+                    time.sleep(2)
+                else:
+                    logging.info("✅ VTM está actualizado.")
+    except Exception as e:
+        logging.warning(f"⚠️ No se pudo comprobar actualizaciones: {e}")
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--texto", action="store_true")
@@ -1686,6 +1713,7 @@ def main():
 
 
     cleanup_temp_files(prefix=LOCAL_PREFIX)
+    check_for_updates()
     player = AudioPlayer(radio_enabled=(args.radio_init == "on"))
     
     # Sobrescribir micro si se pasa por CLI
