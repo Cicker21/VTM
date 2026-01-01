@@ -1,0 +1,20 @@
+{
+    "discord_token": "------",
+    "volume": 0.1,
+    "forced_keyword": null,
+    "filters_enabled": false,
+    "listen_enabled": true,
+    "hotwords": [
+        "rafa",
+        "siri",
+        "alexa",
+        "google",
+        "gero"
+    ],
+    "activation_prefixes": [
+        "oye",
+        "a ver",
+        "hey"
+    ],
+    "hotword": "rafa"
+}
