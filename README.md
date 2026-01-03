@@ -31,7 +31,7 @@ El núcleo del proyecto. Un reproductor de escritorio ultraligero capaz de manej
 ## 2. VTM Discord (Bot)
 Un bot de música personal que replica la experiencia de VTM Desktop en servidores de Discord. Ideal para sesiones compartidas manteniendo la lógica de bajo consumo y cero anuncios.
 
-### � To-Do Discord
+### 📋 To-Do Discord
 - [ ] Mejorar la robustez de los comandos por voz.
 - [ ] Implementar funcinalidades de VTM Desktop.
 - [ ] Estabilidad en general.
@@ -55,7 +55,7 @@ Detecta y elimina videos "Fantasmas" (Deleted/Private/Unlisted) que ensucian las
 
 ### Requisitos
 *   Python 3.10+
-# Pip
+#### Pip
 *   speech_recognition
 *   yt-dlp
 *   ffpyplayer
