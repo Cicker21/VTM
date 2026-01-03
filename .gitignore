@@ -1,0 +1,6 @@
+*.m4a
+*.bat
+*.pickle
+*.json
+!config.json
+!config_discord.json

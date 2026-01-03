@@ -15,7 +15,7 @@
     "hotword": "rafa",
     "filters_enabled": true,
     "tts_volume": 1.0,
-    "volume": 0.18,
+    "volume": 0.2,
     "microphone_index": 1,
     "forced_keyword": null,
     "hotwords": [
@@ -27,5 +27,7 @@
         "reels"
     ],
     "max_shorts_duration": 65,
-    "listen_enabled": false
+    "listen_enabled": false,
+    "pc_threads": 4,
+    "_comment_pc_threads": "CUIDADO: M\u00e1s hilos = mayor riesgo de baneo temporal por parte de YouTube (HTTP 429)."
 }

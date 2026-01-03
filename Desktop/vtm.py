@@ -1,16 +1,14 @@
 # -*- coding: utf-8 -*-
 """
 vtm.py — Reproducir música de YouTube mediante comandos de voz o texto (ES)
-Decodificado de vtm_core.py.
 """
 
 VTM_VERSION = "0.9.0"
-UPDATE_URL = "https://raw.githubusercontent.com/Cicker21/VTM/refs/heads/main/vtm.py"
+UPDATE_URL = "https://raw.githubusercontent.com/Cicker21/VTM/refs/heads/main/Desktop/vtm.py"
 
 import argparse
 import logging
 import os
-import webbrowser
 import time
 import difflib
 import threading
@@ -20,9 +18,13 @@ import uuid
 import re
 import atexit
 import urllib.request
+import random
+import concurrent.futures
 
 from yt_dlp import YoutubeDL
 from ffpyplayer.player import MediaPlayer
+import urllib.request
+import urllib.error
 
 # --- Configuraciones y Rutas ---
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -55,7 +57,7 @@ AYUDA_MSG = (
     "- import [url]       Importar lista de YouTube\n"
     "- pp [nombre]        Reproducir una de tus listas\n"
     "- pr [nombre]        Eliminar una playlist\n"
-    "- pc / pc2 [q]       Verificar links (pc2 = modo profundo)\n\n"
+    "- pc / pcr / pcd / pcdr [q] Verificar playlists (Normal / Recov / Deep / DeepRecov)\n\n"
     
     "⭐️ FAVORITOS\n"
     "- fav / me gusta     Guardar actual en favoritos\n"
@@ -66,11 +68,11 @@ AYUDA_MSG = (
     "- favcheck           Verificar disponibilidad de favoritos\n\n"
     
     "⚙️ AJUSTES Y SISTEMA\n"
+    "- ensure [id]        Diagnóstico forzado de un ID\n"
     "- info / estado      ¿Qué está sonando?\n"
     "- radio [on/off]     Modo radio al vaciarse la cola\n"
     "- con/sin filtros    Activar/Quitar filtros de YouTube\n"
     "- forzar [palabra]   Filtrar radio por una palabra clave\n"
-    "- modo [directo/nav] Cambia motor de descarga\n"
     "- h / ayuda / help   Mostrar esta lista\n"
     "- salir / terminar   Cerrar la aplicación"
 )
@@ -83,7 +85,26 @@ class YtdlLogger:
         if not any(k in msg for k in ignore_keywords):
             logging.warning(f"[yt-dlp] {msg}")
     def error(self, msg):
-        logging.error(f"[yt-dlp ERROR] {msg}")
+        logging.error(f"yt-dlp: {msg}")
+
+def _get_ytdl_opts(download=False, playlist_items=None, quiet=True, outtmpl=None):
+    opts = {
+        'format': 'bestaudio/best',
+        'quiet': quiet,
+        'no_warnings': True,
+        'logger': YtdlLogger(),
+        'nocheckcertificate': True,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+    }
+    if not download:
+        opts.update({'extract_flat': True, 'lazy_playlist': True})
+    if playlist_items:
+        opts['playlist_items'] = playlist_items
+    if outtmpl:
+        opts['outtmpl'] = outtmpl
+    return opts
 
 # --- Gestión de Configuración ---
 def load_config():
@@ -167,92 +188,43 @@ def save_playlists(plist):
 
 # --- Filtrado y Búsqueda ---
 def is_content_allowed(info, config):
-    if not config.get("filters_enabled", True):
-        return True
+    if not config.get("filters_enabled", True): return True
+    t, d = info.get("title", "").lower(), info.get("duration", 0)
     
-    title = info.get("title", "").lower()
-    duration = info.get("duration", 0)
-    forced = config.get("forced_keyword")
-
-    if forced and forced.lower() not in title:
-        logging.info(f"🚫 Saltado (No contiene forzada '{forced}'): {title}")
-        return False
-
-    blacklist = config.get("blacklisted_keywords", [])
-    for word in blacklist:
-        if word.lower() in title:
-            logging.info(f"🚫 Saltado (Blacklist '{word}'): {title}")
-            return False
-
-    # Filtro de duración
-    max_dur = config.get("max_duration_seconds", 600)
-    if duration > max_dur:
-        logging.info(f"🚫 Saltado (Demasiado largo: {duration}s > {max_dur}s): {title}")
-        return False
-
-    # Filtro de Shorts
-    shorts_kws = config.get("shorts_keywords", ["#shorts", "shorts", "reels"])
-    max_shorts_dur = config.get("max_shorts_duration", 65)
-    is_short = any(k.lower() in title for k in shorts_kws)
-    if is_short and duration <= max_shorts_dur:
-        logging.info(f"🚫 Saltado (YouTube Short Detectado): {title} ({duration}s)")
-        return False
-
-    # Filtro de tipo de contenido (Evitar canales/playlists)
-    e_type = info.get("_type", "video")
-    if e_type not in ["video", "url", "url_transparent"]:
-        logging.info(f"🚫 Saltado (No es un video/url: {e_type}): {title}")
-        return False
-
-    return True
+    f = config.get("forced_keyword")
+    if f and f.lower() not in t: return False
+    if any(w.lower() in t for w in config.get("blacklisted_keywords", [])): return False
+    if d > config.get("max_duration_seconds", 600): return False
+    
+    is_short = any(k.lower() in t for k in config.get("shorts_keywords", ["#shorts", "shorts", "reels"]))
+    if is_short and d <= config.get("max_shorts_duration", 65): return False
+    
+    return info.get("_type", "video") in ["video", "url", "url_transparent"]
 
 def get_search_info(query: str, index: int = 0):
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'quiet': True,
-        'no_warnings': True,
-        'logger': YtdlLogger(),
-        'extract_flat': True,
-        'lazy_playlist': True,
-        'playlist_items': '1-10',
-        'source_address': '0.0.0.0',
-        'nocheckcertificate': True,
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-    }
     is_url = query.startswith("http")
     search_query = query if is_url else f"ytsearch10:{query}"
+    opts = _get_ytdl_opts(playlist_items='1-10')
     
     try:
-        with YoutubeDL(ydl_opts) as ydl:
+        with YoutubeDL(opts) as ydl:
             res = ydl.extract_info(search_query, download=False)
-            if not res: 
-                logging.warning(f"DEBUG: YoutubeDL no devolvió resultados para: {search_query}")
-                return None
+            if not res: return None
             
             entries = res.get("entries", [])
-            logging.info(f"DEBUG: Búsqueda '{query}' devolvió {len(entries)} entradas.")
             if not entries and "title" in res:
-                # Si es un vídeo directo (no búsqueda), le inyectamos los campos mínimos
-                if "url" not in res and "webpage_url" in res:
-                    res["url"] = res["webpage_url"]
+                if "url" not in res and "webpage_url" in res: res["url"] = res["webpage_url"]
                 return res
             
             if index < len(entries):
                 entry = entries[index]
-                e_title = entry.get("title", "Sin título")
                 e_url = entry.get("url") or entry.get("webpage_url")
-                e_type = entry.get("_type", "video") # Por defecto asumimos video si no viene
-
-                logging.info(f"DEBUG: Evaluando entrada {index}: '{e_title}' (Tipo: {e_type})")
+                e_type = entry.get("_type", "video")
 
                 if not entry.get("duration") and e_url and e_type in ["url", "url_transparent"]:
-                    logging.info(f"DEBUG: No se detectó duración, extrayendo info extendida de {e_url}...")
-                    with YoutubeDL(ydl_opts) as ydl2:
+                    with YoutubeDL(opts) as ydl2:
                         full_info = ydl2.extract_info(e_url, download=False)
                         if full_info and full_info.get("_type") == "playlist":
-                            # Inyectamos el tipo para que is_content_allowed lo sepa
                             full_info["_type"] = "playlist"
                         return full_info
                 return entry
@@ -262,48 +234,23 @@ def get_search_info(query: str, index: int = 0):
 
 def download_media(url, prefix=TEMP_AUDIO_PREFIX):
     if not url: return None
-    filename = f"{prefix}{uuid.uuid4()}.m4a"
-    filepath = os.path.join(_SCRIPT_DIR, filename)
-
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'outtmpl': filepath,
-        'quiet': True,
-        'no_warnings': True,
-        'logger': YtdlLogger(),
-        'nocheckcertificate': True,
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-    }
+    filepath = os.path.join(_SCRIPT_DIR, f"{prefix}{uuid.uuid4()}.m4a")
+    opts = _get_ytdl_opts(download=True, outtmpl=filepath)
     try:
-        with YoutubeDL(ydl_opts) as ydl:
-            exit_code = ydl.download([url])
-            if exit_code == 0 and os.path.exists(filepath):
+        with YoutubeDL(opts) as ydl:
+            if ydl.download([url]) == 0 and os.path.exists(filepath):
                 return filepath
-            else:
-                logging.error(f"❌ Error en descarga: exit_code={exit_code}, file_exists={os.path.exists(filepath)}")
     except Exception as e:
-        logging.error(f"Excepción en download_media: {e}")
+        logging.error(f"Error descarga: {e}")
     return None
 
 def get_recommendations(video_id: str):
-    # Usamos el parámetro list=RD... para forzar a YouTube a darnos la "radio" del vídeo
     url = f"https://www.youtube.com/watch?v={video_id}&list=RD{video_id}"
-    ydl_opts = {
-        'format': 'bestaudio/best', 
-        'quiet': True, 
-        'no_warnings': True, 
-        'extract_flat': True, 
-        'lazy_playlist': True,
-        'playlist_items': '1-15'
-    }
+    opts = _get_ytdl_opts(playlist_items='1-15')
     try:
-        with YoutubeDL(ydl_opts) as ydl:
+        with YoutubeDL(opts) as ydl:
              info = ydl.extract_info(url, download=False)
-             # En un mix de YouTube, las recomendaciones vienen en 'entries'
-             entries = info.get("entries", [])
-             return [{"id": e["id"], "title": e["title"], "duration": e.get("duration")} for e in entries if e]
+             return [{"id": e["id"], "title": e["title"], "duration": e.get("duration")} for e in info.get("entries", []) if e]
     except: return []
 
 # --- Utilidades de Hardware ---
@@ -366,9 +313,12 @@ class CommandParser:
     RE_PLAYLIST_REMOVE = re.compile(r"^(pr|ppremove|playlistremove)(\s+(?P<q>.+))?$", re.I)
     RE_PLAYLISTS = re.compile(r"^(ps|playlists)$", re.I)
     RE_PLAYLIST_CHECK = re.compile(r"^(pc|playlistcheck|playlist check|checkplaylist)(\s+(?P<q>.+))?$", re.I)
-    RE_PLAYLIST_CHECK_DEEP = re.compile(r"^(pc2|deepcheck)(\s+(?P<q>.+))?$", re.I)
+    RE_PLAYLIST_CHECK_RECOVERED = re.compile(r"^(pcr)(\s+(?P<q>.+))?$", re.I)
+    RE_PLAYLIST_CHECK_DEEP = re.compile(r"^(pcd|deepcheck)(\s+(?P<q>.+))?$", re.I)
+    RE_PLAYLIST_CHECK_DEEP_RECOVERED = re.compile(r"^(pcdr)(\s+(?P<q>.+))?$", re.I)
 
 
+    
     RE_HISTORY = re.compile(r"^(ap|historial|history|ya sonaron)$", re.I)
     RE_SHUFFLE = re.compile(r"^(r|shuffle|random|aleatorio|mezcla(r)?)$", re.I)
     RE_ADD = re.compile(r"^(add|a|cola|añadir)\s+(?P<q>.+)$", re.I)
@@ -386,7 +336,6 @@ class CommandParser:
     RE_MUTE = re.compile(r"^(silencio|calla(te)?|cállate|mute|shh|sh|m)$", re.I)
     RE_UNMUTE = re.compile(r"(habla|unmute|devuelve (el )?sonido|sonido|audio on)", re.I)
     RE_REPLAY = re.compile(r"(repite|repetir|otra vez|ponla de nuevo|reinicia(r)?|bise|reus)", re.I)
-    RE_MODO = re.compile(r"modo\s+(?P<m>(navegador|directo))", re.I)
     RE_RADIO = re.compile(r"(encender|activar|apagar|desactivar|radio|auto-?dj|modo radio)\s*(radio|auto-?dj|modo radio)?\s*(?P<op>on|off)?", re.I)
     RE_FILTROS = re.compile(r"(activar|desactivar|quitar|poner|sin|con|apaga(r?)|enciende|encender)?\s*(los\s+)?filtros?\s*(?P<op>on|off)?", re.I)
     RE_INFO = re.compile(r"(info|informaci[oó]n|qu[eé]\s+suena|estado)", re.I)
@@ -397,6 +346,7 @@ class CommandParser:
     RE_LISTEN = re.compile(r"(activar|desactivar|apagar|encender|pon|quitar|con|sin)?\s*(el\s+)?(micro|micr[oó]fono|escuchar)\s*(?P<op>on|off)?", re.I)
     RE_FILTROS_OP = re.compile(r"(?P<kw>activar|desactivar|quitar|poner|sin|con|apaga(r?)|enciende|encender)", re.I)
     RE_VOL_SHORT = re.compile(r"^(v|vol)\s+(?P<n>\d{1,3})$", re.I)
+    RE_ENSURE = re.compile(r"^ensure\s+(?P<id>[a-zA-Z0-9_-]{11})$", re.I)
 
     def parse(self, text: str):
         raw = text.strip()
@@ -404,6 +354,7 @@ class CommandParser:
 
         if self.RE_AYUDA.search(raw): return ("help", {})
         if self.RE_PLAYFAV.search(raw): return ("playfav", {}) # Prioridad sobre 'play'
+        if self.RE_FAV_RANDOM.search(raw): return ("favrandom", {})
         m = self.RE_PLAYLIST.search(raw)
         if m: return ("playlist", {"q": m.group("q")})
 
@@ -411,13 +362,17 @@ class CommandParser:
         if m: return ("playlist_remove", {"q": m.group("q")})
 
         if self.RE_PLAYLISTS.search(raw): return ("playlists", {})
-        m = self.RE_PLAYLIST_CHECK.search(raw)
-        if m: return ("playlistcheck", {"q": m.group("q")})
+        m = self.RE_PLAYLIST_CHECK_DEEP.match(t)
+        if m: return "playlistcheck_deep", m.groupdict()
+        
+        m = self.RE_PLAYLIST_CHECK_DEEP_RECOVERED.match(t)
+        if m: return "playlistcheck_deep_recovered", m.groupdict()
 
-        m = self.RE_PLAYLIST_CHECK_DEEP.search(raw)
-        if m: return ("playlistcheck_deep", {"q": m.group("q")})
+        m = self.RE_PLAYLIST_CHECK_RECOVERED.match(t)
+        if m: return "playlistcheck_recovered", m.groupdict()
 
-
+        m = self.RE_PLAYLIST_CHECK.match(t)
+        if m: return "playlistcheck", m.groupdict()
         
         m = self.RE_IMPORT.search(raw)
         if m: return ("import", {"url": m.group("url")})
@@ -467,8 +422,6 @@ class CommandParser:
             direction = "down" if any(x in op for x in ["baja", "menos"]) else "up"
             return ("volume_rel", {"direction": direction})
 
-        m = self.RE_MODO.search(raw)
-        if m: return ("mode", {"m": m.group("m").lower()})
         
         m = self.RE_RADIO.search(raw)
         if m:
@@ -505,6 +458,9 @@ class CommandParser:
             elif any(x in t for x in ["desactivar", "apagar", "quitar", "sin", "off"]) and not (op == "on"): enabled = False
             return ("listen", {"enabled": enabled})
 
+        m = self.RE_ENSURE.search(raw)
+        if m: return ("ensure", {"id": m.group("id")})
+
         return (None, {})
 
 # Configuración de logging global
@@ -517,8 +473,6 @@ def on_exit_hook():
     logging.info("🛑 [VTM EXIT HOOK] El proceso está terminando...")
 
 atexit.register(on_exit_hook)
-
-LOCAL_PREFIX = "vtm_local_"
 
 # -----------------------------------------------------------
 # Reproductor basado en FFPyPlayer
@@ -543,19 +497,19 @@ class AudioPlayer:
         self.forced_keyword = self.config.get("forced_keyword")
         
         # Modo Playlist de Favoritos
-        self.fav_playlist_mode = False
-        self.fav_index = 0
-        
-        # Modo Playlist Importada
         self.plist_mode = False
-        self.plist_index = 0
         self.plist_id = None
         self.plist_title = None
+        self.plist_index = 0
         
         self._preloaded_data = None
         self._preloading = False
         self.queue = []
         self._lock = threading.RLock()
+        
+        # Radio exhaustion prevention
+        self._radio_exhausted = False
+        self._last_radio_attempt = 0
 
 
     def toggle_radio(self, enabled: bool):
@@ -678,17 +632,13 @@ class AudioPlayer:
                 return None
 
 
-    def play_query(self, query: str, open_in_browser: bool, index: int = 0):
+    def play_query(self, query: str, index: int = 0):
         # logging.info(f"DEBUG: play_query called with query='{query}', index={index}")
         self.fav_playlist_mode = False # Reset playlist
         self.plist_mode = False
         self._last_query = query
         self._last_index = index
 
-        if open_in_browser:
-            url = query if query.startswith("http") else f"https://www.youtube.com/results?search_query={query}"
-            webbrowser.open(url)
-            return
 
         # Buscamos un resultado que pase los filtros
         info = None
@@ -717,9 +667,11 @@ class AudioPlayer:
             return None
         
         logging.info(f"💾 Descargando: {info.get('title')}...")
-        filepath = download_media(info.get("page_url") or info.get("url"), prefix=LOCAL_PREFIX)
+        filepath = download_media(info.get("page_url") or info.get("url"), prefix=TEMP_AUDIO_PREFIX)
         if not filepath: return None
 
+        # Resetear bandera de radio exhausta al reproducir nueva canción manualmente
+        self._radio_exhausted = False
         return self._start_playback(info, filepath)
 
     def _is_too_similar(self, title1, title2, threshold=0.45):
@@ -735,49 +687,32 @@ class AudioPlayer:
     def update(self):
         try:
             with self._lock:
-                if not self.radio_mode or self._paused or self._manually_stopped:
-                    return
-                if not self._player:
-                    return
-                    
-                # logging.debug("DEBUG: player.update TICK")
-                try:
-                    pts = self._player.get_pts() or 0
-                except (Exception, BaseException) as e:
-                    logging.info(f"DEBUG: get_pts() falló (normal en transición): {e}")
-                    pts = 0
+                if self._paused or self._manually_stopped or not self._player: return
                 
                 try:
+                    pts = self._player.get_pts() or 0
                     meta = self._player.get_metadata()
                     duration = meta.get('duration', self._current_duration or 0)
-                except (Exception, BaseException) as e:
-                    # logging.debug(f"DEBUG Error en get_metadata(): {e}")
-                    duration = self._current_duration or 0
+                except:
+                    pts, duration = 0, self._current_duration or 0
                 
                 if duration > 0:
                     rem = duration - pts
-                    # Iniciar precarga si falta poco
                     if not self._preloaded_data and not self._preloading and (pts > duration * 0.8 or rem < 20):
                         self._preloading = True
-                        logging.info(f"DEBUG: Disparando precarga (PTS: {pts:.1f}, DUR: {duration:.1f})")
                         threading.Thread(target=self._background_preload, daemon=True).start()
 
-                    # Transición a siguiente canción
-                    if pts >= duration - 0.8 and duration > 0:
-                        logging.info(f"DEBUG: Fin de canción detectado (PTS: {pts:.1f}, DUR: {duration:.1f})")
+                    if pts >= duration - 0.8:
                         if self._preloaded_data:
                             info, fpath = self._preloaded_data
-                            # Limpiar FLAG de precarga ANTES de iniciar el nuevo track para evitar re-entradas curiosas
                             self._preloaded_data = None
-                            logging.info(f"DEBUG: Usando dato precargado: {info['title']}")
+                            self._radio_exhausted = False
                             self._start_playback(info, fpath)
-                        else:
-                            logging.info("DEBUG: Nada precargado, pidiendo next_result")
-                            self.next_result(False)
-        except (Exception, BaseException) as e:
-            logging.error(f"❌ ERROR CRÍTICO en AudioPlayer.update: {e}")
-            import traceback
-            traceback.print_exc()
+                        elif time.time() - getattr(self, '_last_next_call', 0) > 2:
+                            self._last_next_call = time.time()
+                            self.next_result()
+        except Exception as e:
+            logging.error(f"Error update: {e}")
 
 
     def _background_preload(self):
@@ -791,7 +726,7 @@ class AudioPlayer:
                         info, fpath = item
                         if not fpath:
                             logging.info(f"⏳ Precargando siguiente canción de la cola: {info['title']}")
-                            new_fpath = download_media(info.get("page_url") or info.get("url"), prefix=LOCAL_PREFIX)
+                            new_fpath = download_media(info.get("page_url") or info.get("url"), prefix=TEMP_AUDIO_PREFIX)
                             if new_fpath:
                                 with self._lock:
                                     # Actualizar en la cola
@@ -822,6 +757,17 @@ class AudioPlayer:
             self._preloading = False
 
 
+    def _try_candidate(self, info, strict=True):
+        if not info: return None
+        if strict:
+            if info["title"] in self.history: return None
+            if not is_content_allowed(info, self.config): return None
+            if self._is_too_similar(self._current_title, info["title"])[0]: return None
+        
+        fpath = download_media(info.get("page_url") or info.get("url"), prefix=TEMP_AUDIO_PREFIX)
+        return (info, fpath) if fpath else None
+
+
     def _get_next_candidate_data(self):
         logging.info("🔍 Obteniendo siguiente candidato...")
         
@@ -831,99 +777,74 @@ class AudioPlayer:
                 info, fpath = self.queue.pop(0)
                 if not fpath:
                     logging.info(f"⏳ Descargando JIT para el siguiente en cola: {info['title']}")
-                    fpath = download_media(info.get("page_url") or info.get("url"), prefix=LOCAL_PREFIX)
+                    # Si no tiene URL, hay que buscarla primero
+                    if not info.get("url") and not info.get("page_url"):
+                        full_info = get_search_info(info["id"])
+                        if full_info: info.update(full_info)
+                    
+                    fpath = download_media(info.get("page_url") or info.get("url"), prefix=TEMP_AUDIO_PREFIX)
                 
-                if fpath:
-                    logging.info(f"✅ Siguiente desde la cola: {info['title']}")
-                    return (info, fpath)
-
-
-        # 2. Modo Playlist de Favoritos
-        if self.fav_playlist_mode:
-            favs = load_favorites()
-            if favs:
-                self.fav_index = (self.fav_index + 1) % len(favs)
-                chosen = favs[self.fav_index]
-                logging.info(f"✅ Siguiente favorito ({self.fav_index+1}/{len(favs)}): {chosen['title']}")
-                info = get_search_info(chosen["id"], index=0)
-                if info:
-                    info["_is_fav_playlist"] = True
-                    fpath = download_media(info.get("page_url") or info.get("url"), prefix=LOCAL_PREFIX)
-                    if fpath: return (info, fpath)
-
-        # 3. Modo Playlist Importada
+                if fpath: return (info, fpath)
+        
+        # 2. Modo Playlist
         if self.plist_mode:
             all_plist = load_playlists()
             if self.plist_id in all_plist:
-                plist_data = all_plist[self.plist_id]
-                songs = plist_data.get("songs", [])
+                songs = all_plist[self.plist_id].get("songs", [])
                 if songs:
                     self.plist_index = (self.plist_index + 1) % len(songs)
                     chosen = songs[self.plist_index]
-                    logging.info(f"✅ Siguiente de playlist '{plist_data.get('title')}' ({self.plist_index+1}/{len(songs)}): {chosen['title']}")
-                    info = get_search_info(chosen["id"], index=0)
-                    if info:
-                        info["_is_plist"] = True
-                        fpath = download_media(info.get("page_url") or info.get("url"), prefix=LOCAL_PREFIX)
-                        if fpath: return (info, fpath)
+                    logging.info(f"✅ Siguiente de playlist '{all_plist[self.plist_id].get('title')}' ({self.plist_index+1}/{len(songs)})")
+                    # En modo playlist NO somos estrictos con historial/filtros (strict=False)
+                    res = self._try_candidate(get_search_info(chosen["id"]), strict=False)
+                    if res:
+                        res[0]["_is_plist"] = True
+                        return res
             else:
-                logging.warning(f"⚠️ Playlist activa '{self.plist_id}' no encontrada. Desactivando modo playlist.")
-                self.plist_mode = False
+                logging.warning(f"⚠️ Playlist '{self.plist_id}' no encontrada. Off."); self.plist_mode = False
 
+        # 3. Modo Radio
+        if not self.radio_mode: return None
 
-        # 4. Modo Radio / Recomendaciones
+        # 3.1 Recomendaciones
         if self._current_id:
-            recs = get_recommendations(self._current_id)
-            logging.info(f"📋 Evaluando {len(recs)} recomendaciones...")
-            for entry in recs:
-                try:
-                    if entry["id"] == self._current_id: continue
-                    if entry["title"] in self.history:
-                        logging.info(f"⏳ Saltado (Ya escuchado): {entry['title']}")
-                        continue
-                    
-                    if not is_content_allowed(entry, self.config): continue
-                    
-                    similar, ratio = self._is_too_similar(self._current_title, entry["title"])
-                    if similar:
-                        logging.info(f"⏳ Saltado (Muy similar [{int(ratio*100)}%]): {entry['title']}")
-                        continue
-                    
-                    logging.info(f"✅ Candidato encontrado (Recs): {entry['title']}")
-                    info = get_search_info(entry['id'], index=0)
-                    if info:
-                        fpath = download_media(info.get("page_url") or info.get("url"), prefix=LOCAL_PREFIX)
-                        if fpath: return (info, fpath)
-                except Exception as e:
-                    logging.error(f"Error evaluando candidato radio: {e}")
-                    continue
+            logging.info(f"📋 Evaluando recomendaciones para {self._current_id}...")
+            for entry in get_recommendations(self._current_id):
+                res = self._try_candidate(get_search_info(entry['id']))
+                if res: return res
 
+        # 3.2 Última búsqueda
         if self._last_query:
             logging.info(f"📋 Buscando en resultados de '{self._last_query}'...")
             for i in range(1, 10):
-                idx = self._last_index + i
-                info = get_search_info(self._last_query, index=idx)
+                info = get_search_info(self._last_query, index=self._last_index + i)
                 if not info: break
-                
-                if info["title"] in self.history:
-                    logging.info(f"⏳ Saltado (Ya escuchado): {info['title']}")
-                    continue
-                
-                if not is_content_allowed(info, self.config): continue
-                
-                similar, ratio = self._is_too_similar(self._current_title, info["title"])
-                if similar:
-                    logging.info(f"⏳ Saltado (Muy similar [{int(ratio*100)}%]): {info['title']}")
-                    continue
-                
-                logging.info(f"✅ Candidato encontrado (Búsqueda): {info['title']}")
-                fpath = download_media(info.get("page_url") or info.get("url"), prefix=LOCAL_PREFIX)
-                if fpath: return (info, fpath)
+                res = self._try_candidate(info)
+                if res: return res
+        
+        # 3.3 Favorito aleatorio
+        favs = load_favorites()
+        if favs:
+            logging.info("🎲 Buscando favorito aleatorio...")
+            for _ in range(min(5, len(favs))):
+                chosen = random.choice(favs)
+                res = self._try_candidate(get_search_info(chosen["id"]))
+                if res:
+                    logging.info(f"🎲 Reiniciando radio con favorito: {res[0]['title']}")
+                    return res
+
+        # 3.4 Artista
+        if self._current_title:
+            artist = self._current_title.split('-')[0].split('(')[0].strip()
+            if len(artist) > 3:
+                logging.info(f"🔍 Buscando más de '{artist}'...")
+                res = self._try_candidate(get_search_info(artist))
+                if res: return res
         
         logging.warning("⚠️ No se encontraron candidatos adecuados para la radio.")
         return None
 
-    def next_result(self, open_in_browser: bool):
+    def next_result(self):
         # Si ya hay algo precargado, lo usamos
         with self._lock:
             if self._preloaded_data:
@@ -935,11 +856,18 @@ class AudioPlayer:
                     self.queue.pop(0)
 
                 logging.info(f"⏭️ Usando canción precargada: {info['title']}")
+                self._radio_exhausted = False  # Resetear si encontramos contenido
                 self._start_playback(info, fpath)
                 return
 
         res = self._get_next_candidate_data()
-        if res: self._start_playback(res[0], res[1])
+        if res:
+            self._radio_exhausted = False  # Resetear si encontramos contenido
+            self._start_playback(res[0], res[1])
+        else:
+            # Marcar como exhausta para evitar spam
+            self._radio_exhausted = True
+            logging.warning("⚠️ Radio exhausta: no se encontró ninguna canción nueva. Esperando 30s...")
 
 
     def pause(self):
@@ -950,9 +878,20 @@ class AudioPlayer:
         if self._player: self._player.set_pause(False)
         self._paused = False
 
+    def _fmt_title(self, info):
+        if not info: return "Nada sonando"
+        title = info.get("title", info.get("id", "??"))
+        # Limpiamos posibles emojis residuales si los hubiera
+        title = re.sub(r"[♻️🔎🆘\u267b\ufe0f]", "", title).strip()
+        method = info.get("recovery_method")
+        if method:
+            icon = "♻️" if method == "meta" else ("🔎" if method == "flat" else "🆘")
+            return f"{icon} {title} {icon}"
+        return title
+
     def get_playback_info(self):
         with self._lock:
-            title = self._current_title or "Nada sonando"
+            title = self._fmt_title(self._current_info)
             r = "ON" if self.radio_mode else "OFF"
             f = "ON" if self.config.get("filters_enabled", True) else "OFF"
             fk = self.forced_keyword or "OFF"
@@ -969,9 +908,9 @@ class AudioPlayer:
     
             next_str = ""
             if self._preloaded_data: 
-                next_str = f"Siguiente: {self._preloaded_data[0]['title']}\n"
+                next_str = f"Siguiente: {self._fmt_title(self._preloaded_data[0])}\n"
             elif self.queue:
-                next_str = f"Siguiente: {self.queue[0][0]['title']} (⏳ cargando)\n"
+                next_str = f"Siguiente: {self._fmt_title(self.queue[0][0])} (⏳ cargando)\n"
             elif self._preloading: 
                 next_str = "Siguiente: ⏳ Buscando...\n"
     
@@ -1025,15 +964,7 @@ class AudioPlayer:
 
     def import_playlist(self, url):
         logging.info(f"📥 Importando playlist desde: {url}")
-        ydl_opts = {
-            'quiet': True,
-            'extract_flat': True,
-            'force_generic_extractor': False,
-            'nocheckcertificate': True,
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
-        }
+        ydl_opts = _get_ytdl_opts(quiet=True)
         try:
             with YoutubeDL(ydl_opts) as ydl:
                 res = ydl.extract_info(url, download=False)
@@ -1063,24 +994,65 @@ class AudioPlayer:
 
                 all_playlists = load_playlists()
                 
-                # Si ya existe, decidimos si fusionar o sobrescribir. Por simplicidad, sobrescribimos/limpiamos
-                current_songs = []
-                added = 0
-                for e in entries:
-                    if not e: continue
-                    eid = e.get("id")
-                    title = e.get("title") or "Sin título"
-                    if eid and title:
-                        current_songs.append({"id": eid, "title": title})
-                        added += 1
-                
+                # Gestión de colisiones y fusión (Merge)
+                if playlist_id in all_playlists:
+                    old_data = all_playlists[playlist_id]
+                    old_songs = old_data.get("songs", [])
+                    old_map = {s["id"]: s for s in old_songs}
+                    
+                    new_ids = {e.get("id") for e in entries if e and e.get("id")}
+                    orphaned = [s for s in old_songs if s["id"] not in new_ids]
+                    
+                    keep_orphans = False
+                    if orphaned:
+                        print(f"\n❓ Conflict detected: '{playlist_title}' ({playlist_id}) already exists.")
+                        ans = input(f"   Se han detectado {len(orphaned)} canciones locales que ya no están en YouTube.\n   ¿Deseas conservar las viejas canciones? (s/n): ").lower()
+                        keep_orphans = (ans == 's')
+
+                    # Construir lista combinada
+                    merged_songs = []
+                    added_new = 0
+                    preserved = 0
+                    
+                    for e in entries:
+                        if not e: continue
+                        eid = e.get("id")
+                        if not eid: continue
+                        
+                        if eid in old_map:
+                            # CONSERVAR EL TÍTULO ANTERIOR (y sus etiquetas de recuperación)
+                            merged_songs.append(old_map[eid])
+                            preserved += 1
+                        else:
+                            # Nueva canción de YouTube
+                            title = e.get("title") or "Sin título"
+                            merged_songs.append({"id": eid, "title": title})
+                            added_new += 1
+                    
+                    if keep_orphans:
+                        merged_songs.extend(orphaned)
+                        logging.info(f"➕ Se han conservado {len(orphaned)} canciones antiguas.")
+                    
+                    current_songs = merged_songs
+                    msg = f"Importación fusionada: '{playlist_title}'. Nuevas: {added_new}, Preservadas: {preserved}, Total: {len(current_songs)}."
+                else:
+                    # Importación limpia (nueva playlist)
+                    current_songs = []
+                    for e in entries:
+                        if not e: continue
+                        eid = e.get("id")
+                        title = e.get("title") or "Sin título"
+                        if eid:
+                            current_songs.append({"id": eid, "title": title})
+                    msg = f"Importación finalizada: '{playlist_title}'. Añadidas {len(current_songs)} canciones."
+
                 all_playlists[playlist_id] = {
                     "title": playlist_title,
                     "songs": current_songs
                 }
                 
                 save_playlists(all_playlists)
-                return f"Importación finalizada: '{playlist_title}'. Añadidas {added} canciones (Total en esta lista: {len(current_songs)})."
+                return msg
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -1088,7 +1060,113 @@ class AudioPlayer:
 
 
 
-    def check_playlists(self, query=None, deep=False):
+    def _is_title_generic(self, title):
+        if not title: return True
+        return any(x in title.lower() for x in ["deleted video", "private video", "v\u00eddeo eliminado", "v\u00eddeo privado", "wayback machine", "internet archive"])
+
+    def _rescue_id(self, s_id, meta_map=None, verbose=True, logger_func=None, sos_only=False):
+        """
+        Unified engine to rescue a video title from an unavailable ID.
+        Priority: Meta (if provided) > Flat > WayBack > SOS Search.
+        If sos_only=True, skips Meta and Flat.
+        Returns: (recovered_title, method_label) or (None, None)
+        """
+        if logger_func is None: logger_func = logging.info
+        if verbose: logger_func(f"    🔎 Buscando rescate para {s_id}...")
+        
+        if not sos_only:
+            # 1. Meta (Playlist-based or passed map)
+            if meta_map and s_id in meta_map:
+                t = meta_map[s_id]
+                if t and not self._is_title_generic(t):
+                    if verbose: logger_func(f"    ♻️ [meta] Encontrado: {t}")
+                    return t, "meta"
+            
+            # 2. Flat Extraction (Direct from YouTube)
+            if verbose: logger_func(f"    ⏳ [flat] Intentando extracción directa...")
+            # Silenciamos errores de yt-dlp aquí para que no ensucien la consola si falla el Flat
+            ydl_opts = _get_ytdl_opts(quiet=True)
+            ydl_opts.update({"logger": None, "no_warnings": True, "quiet": True})
+            try:
+                with YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(f"https://www.youtube.com/watch?v={s_id}", download=False)
+                    t = info.get("title")
+                    if t and not self._is_title_generic(t):
+                        if verbose: logger_func(f"    🔎 [flat] Encontrado: {t}")
+                        return t, "flat"
+            except: pass
+        else:
+            if verbose: logger_func(f"    🚀 [pcd] Saltando Meta/Flat, modo SOS-ONLY activado.")
+        
+        # 3. WayBack Machine (Optimizado con urllib + regex + fallback ytdl)
+        # Probamos variantes de URL comunes en YT para aumentar éxito en WayBack
+        target_urls = [
+            f"https://www.youtube.com/watch?v={s_id}",
+            f"https://youtu.be/{s_id}",
+            f"https://www.youtube.com/v/{s_id}"
+        ]
+        
+        for base_url in target_urls:
+            try:
+                wb_api = f"https://archive.org/wayback/available?url={base_url}"
+                if verbose: logger_func(f"    ⏳ [sos(wayback)] Consultando archivo ({base_url.split('/')[-1]})...")
+                with urllib.request.urlopen(wb_api, timeout=5) as resp:
+                    data = json.loads(resp.read().decode())
+                    snap = data.get("archived_snapshots", {}).get("closest")
+                    if snap and snap.get("available"):
+                        snap_url = snap["url"]
+                        
+                        # Intento 1: Extracción rápida vía urllib (más eficiente)
+                        try:
+                            with urllib.request.urlopen(snap_url, timeout=5) as page:
+                                html = page.read().decode('utf-8', errors='replace')
+                                match = re.search(r"<title>(.*?)</title>", html, re.I | re.S)
+                                if match:
+                                    wt = match.group(1).replace(" - YouTube", "").replace("YouTube", "").strip()
+                                    wt = wt.replace("&quot;", "\"").replace("&#39;", "'").replace("&amp;", "&")
+                                    if wt and len(wt) > 5 and not self._is_title_generic(wt):
+                                        if verbose: logger_func(f"    🆘 [sos(wayback)] Encontrado (urllib): {wt}")
+                                        return wt, "sos(wayback)"
+                        except: pass
+                        
+                        # Intento 2: Fallback a yt-dlp (más pesado pero entiende mejor el HTML de memento)
+                        try:
+                            if verbose: logger_func(f"    ⏳ [sos(wayback)] Fallback a yt-dlp para snapshot...")
+                            with YoutubeDL(ydl_opts) as ydl_wb:
+                                wb_info = ydl_wb.extract_info(snap_url, download=False)
+                                wt = wb_info.get("title")
+                                if wt:
+                                    clean_wt = wt.replace(s_id, "").replace(" - YouTube", "").replace("YouTube", "").strip(" - ")
+                                    clean_wt = clean_wt.replace("(snapshot)", "").strip()
+                                    if len(clean_wt) > 5 and not self._is_title_generic(clean_wt):
+                                        if verbose: logger_func(f"    🆘 [sos(wayback)] Encontrado (ytdl): {clean_wt}")
+                                        return clean_wt, "sos(wayback)"
+                        except: pass
+            except: pass
+            
+        # 4. SOS Search (Google / DuckDuckGo)
+        # Agresivamente silenciado
+        for engine, query_pref in [("Google", "gvsearch1"), ("DuckDuckGo", "ddgsearch1")]:
+            if verbose: logger_func(f"    ⏳ [sos({engine.lower()})] Buscando en {engine}...")
+            try:
+                # Prioridad 1: ID literal. Prioridad 2: Con contexto.
+                for q in [s_id, f"youtube {s_id}"]:
+                    with YoutubeDL(ydl_opts) as ydl:
+                        res = ydl.extract_info(f"{query_pref}:{q}", download=False)
+                        if res and "entries" in res and res["entries"]:
+                            st = res["entries"][0].get("title")
+                            if st:
+                                clean_st = st.replace(s_id, "").replace(" - YouTube", "").strip(" - ")
+                                # Filtro de calidad: debe tener longitud o contener el ID en el original
+                                if (s_id in st or len(clean_st) > 5) and not self._is_title_generic(clean_st):
+                                    if verbose: logger_func(f"    🆘 [sos({engine.lower()})] Encontrado: {clean_st}")
+                                    return clean_st, f"sos({engine.lower()})"
+            except: pass
+            
+        if verbose: logger_func(f"    ❌ No se pudo recuperar el título para {s_id}")
+        return None, None
+
+    def check_playlists(self, query=None, deep=False, only_recovered=False):
         all_playlists = load_playlists()
         if not all_playlists: return "No hay playlists para verificar."
         
@@ -1114,22 +1192,36 @@ class AudioPlayer:
         to_delete_map = {} # {pid: [indices_to_remove]}
         recovered_any = False
 
+        should_save = True
         if deep:
-            logging.info(f"🚀 INICIANDO CHEQUEO PROFUNDO (Deep Recovery Mode) para {len(target_playlists)} playlist(s)...")
+            print("\n🚀 PCD (Deep Check): Escaneo agresivo SOS-Only.")
+            print("Este modo ignora metadatos locales y busca directamente en archivos web y buscadores.")
+            ans = input("¿Deseas guardar los resultados en el JSON al finalizar? (s/n): ").strip().lower()
+            should_save = (ans == 's')
+            if not should_save:
+                print("ℹ️ Modo consulta: Los cambios se mostrarán pero NO se guardarán.")
+
+        if deep:
+            logging.info(f"🚀 INICIANDO COMPROBACIÓN PROFUNDA (SOS-Only) para {len(target_playlists)} playlist(s)...")
         else:
             logging.info(f"🔍 Verificando {len(target_playlists)} playlist(s) ({total_songs} canciones)...")
         
-        ydl_opts_flat = {'quiet': True, 'no_warnings': True, 'extract_flat': True, 'skip_download': True}
-        ydl_opts_check = {'quiet': True, 'no_warnings': True, 'extract_flat': True, 'skip_download': True}
+        ydl_opts_flat = _get_ytdl_opts(quiet=True)
+        ydl_opts_flat.update({"extract_flat": True, "no_warnings": True, "quiet": True, "logger": None})
+        ydl_opts_check = _get_ytdl_opts(quiet=True)
+        ydl_opts_check.update({"no_warnings": True, "quiet": True, "logger": None})
+
+        num_threads = self.config.get("pc_threads", 4)
+        report_lock = threading.Lock()
 
         # Bucle principal
         with YoutubeDL(ydl_opts_check) as ydl:
             for pid, pdata in target_playlists.items():
                 p_title = pdata.get("title", pid)
                 
-                # --- PASO 1: Intentar recuperar títulos vía metadatos de PLAYLIST (Solo en modo normal) ---
+                # --- PASO 1: Intentar recuperar títulos vía metadatos de PLAYLIST ---
                 meta_map = {}
-                if not deep and len(pid) > 5 and not pid.startswith("migrated"):
+                if len(pid) > 5 and not pid.startswith("migrated"):
                     try:
                         logging.info(f"⏳ Recuperando metadatos de la lista '{p_title}'...")
                         with YoutubeDL(ydl_opts_flat) as ydl_flat:
@@ -1138,75 +1230,135 @@ class AudioPlayer:
                                 for entry in plist_info["entries"]:
                                     if entry and entry.get("id"):
                                         t = entry.get("title")
-                                        # Solo guardamos si no es un título genérico de YT
                                         if t and not any(x in t.lower() for x in ["deleted video", "private video", "v\u00eddeo eliminado", "v\u00eddeo privado"]):
                                             meta_map[entry["id"]] = t
                     except: pass
                 
+                songs_list = pdata.get("songs", [])
                 valid_indices = []
-                for i, s in enumerate(pdata.get("songs", [])):
-                    processed_count += 1
-                    s_id = s.get("id")
-                    current_title = s.get("title", s_id)
-                    
-                    # Intentar recuperar si el nombre actual es genérico (borrado/privado/ID)
-                    is_generic = any(x in current_title.lower() for x in ["deleted video", "private video", "v\u00eddeo eliminado", "v\u00eddeo privado"]) 
-                    if is_generic or current_title == s_id:
-                        recovered_title = meta_map.get(s_id)
-                        
-                        # Fallback 1: Probar extract_flat directo del video
-                        if not recovered_title:
-                            try:
-                                with YoutubeDL(ydl_opts_flat) as ydl_v:
-                                    v_info = ydl_v.extract_info(f"https://www.youtube.com/watch?v={s_id}", download=False)
-                                    vt = v_info.get("title")
-                                    if vt and not any(x in vt.lower() for x in ["deleted video", "private video", "v\u00eddeo eliminado", "v\u00eddeo privado"]):
-                                        recovered_title = vt
-                            except: pass
-
-                        # Fallback 2: Búsqueda SOS en la web (Google Search vía ydl)
-                        # Muchos vídeos borrados tienen el ID indexado con su título original en la web
-                        if not recovered_title:
-                            try:
-                                search_opts = {'quiet': True, 'no_warnings': True, 'extract_flat': True, 'skip_download': True}
-                                with YoutubeDL(search_opts) as ydl_s:
-                                    # Buscamos el ID en Google a través de yt-dlp
-                                    search_res = ydl_s.extract_info(f"gvsearch1:{s_id}", download=False)
-                                    if search_res and "entries" in search_res and search_res["entries"]:
-                                        st = search_res["entries"][0].get("title")
-                                        if st and s_id in st: # Si el resultado contiene el ID, puede ser el título real
-                                            # Limpiamos el título si viene con formato de búsqueda
-                                            clean_st = st.replace(s_id, "").replace(" - YouTube", "").strip(" - ")
-                                            if clean_st and len(clean_st) > 3:
-                                                recovered_title = clean_st
-                            except: pass
-
-                        if recovered_title:
-                            s["title"] = f"\u267b\ufe0f {recovered_title} \u267b\ufe0f"
-                            recovered_any = True
-                            logging.info(f"♻\ufe0f T\u00edtulo recuperado para {s_id}: {recovered_title}")
-
-                    s_title = s.get("title")
-                    print(f"\r[{processed_count}/{total_songs}] Verificando: {s_title} (en {p_title})\033[K", end="", flush=True)
-                    
-                    try:
-                        # Verificamos disponibilidad real (si es reproducible)
-                        ydl.extract_info(f"https://www.youtube.com/watch?v={s_id}", download=False)
-                        valid_indices.append(i)
-                    except Exception:
-                        total_deleted += 1
-                        # En el informe, usamos el título tal cual (que ya podría tener los ♻️)
-                        unavailable_reports.append(f"- {s_title} (ID: {s_id}) (Playlist: {p_title})")
                 
-                if len(valid_indices) != len(pdata.get("songs", [])):
-                    all_indices = set(range(len(pdata.get("songs", []))))
+                def check_worker(index_song_tuple):
+                    nonlocal recovered_any, total_deleted, processed_count
+                    idx, s = index_song_tuple
+                    s_id = s.get("id")
+                    
+                    # MEJORA: pcr (solo recuperadas)
+                    if only_recovered and not s.get("recovery_method"):
+                        return (idx, True, None) # (index, is_valid, report_line)
+
+                    # Limpieza base
+                    raw_title = s.get("title", s_id)
+                    current_title = re.sub(r"[♻️🔎🆘\u267b\ufe0f]", "", raw_title).strip()
+                    current_method = s.get("recovery_method")
+
+                    # PASO 2: Disponibilidad Real
+                    is_available = False
+                    try:
+                        ydl.extract_info(f"https://www.youtube.com/watch?v={s_id}", download=False)
+                        is_available = True
+                    except:
+                        is_available = False
+
+                    if is_available:
+                        # Limpiar etiquetas si está vivo
+                        updated = False
+                        if current_method:
+                            del s["recovery_method"]
+                            updated = True
+                        s["title"] = current_title
+                        with report_lock:
+                            processed_count += 1
+                            print(f"👁️‍🗨️ [{processed_count}/{total_songs}] Disponible: {current_title} (en {p_title})")
+                            if updated: recovered_any = True
+                        return (idx, True, None)
+                    
+                    # PASO 3: Rescate (No disponible)
+                    # Invalidar meta si no está en el mapa
+                    if current_method == "meta" and s_id not in meta_map:
+                        current_method = None
+                    
+                    is_generic = self._is_title_generic(current_title)
+                    # MEJORA: Si es pcd/pcdr (deep), forzamos el intento de rescate ignorando etiquetas previas
+                    if is_generic or current_title == s_id or not current_method or deep:
+                        # Reintentos de rescate (max 3)
+                        for attempt in range(1, 4):
+                            recovered_title, source_label = self._rescue_id(s_id, meta_map=meta_map, verbose=(attempt==1), sos_only=deep)
+                            if recovered_title:
+                                s["title"] = recovered_title
+                                s["recovery_method"] = source_label
+                                if "recycled" in s: del s["recycled"]
+                                current_title = recovered_title
+                                current_method = source_label
+                                with report_lock:
+                                    recovered_any = True
+                                    r_icon = "♻️" if source_label == "meta" else ("🔎" if source_label == "flat" else "🆘")
+                                    logging.info(f"{r_icon} Título recuperado para {s_id} [{source_label}] (Intento {attempt}): {recovered_title}")
+                                break
+                            else:
+                                if deep and attempt == 3:
+                                    # Si es PCD y NO encontramos nada por SOS tras 3 intentos, marcamos como failed
+                                    if not current_method or "sos" not in current_method:
+                                        s["recovery_method"] = "failed"
+                                        current_method = "failed"
+                                        with report_lock: recovered_any = True
+
+                    # Fallback failed (para PC normal o si pcd/pcdr falló tras retries)
+                    if not s.get("recovery_method") and not self._is_title_generic(current_title) and current_title != s_id:
+                        s["recovery_method"] = "failed"
+                        current_method = "failed"
+                        with report_lock: recovered_any = True
+
+                    # Título final para el reporte
+                    emo = "🆘" if (current_method == "failed" or (current_method and "sos" in current_method)) else ("♻️" if current_method == "meta" else ("🔎" if current_method == "flat" else ""))
+                    
+                    # MEJORA: Añadir procedencia detallada al reporte
+                    source_tag = ""
+                    if current_method == "failed":
+                        source_tag = " failed"
+                    elif current_method == "sos(wayback)":
+                        source_tag = " (WayBack)"
+                    elif current_method == "sos(google)":
+                        source_tag = " (Google)"
+                    elif current_method == "sos(ddg)":
+                        source_tag = " (DDG)"
+                    elif current_method == "meta":
+                        source_tag = " (Meta)"
+                    elif current_method == "flat":
+                        source_tag = " (Flat)"
+
+                    rep_title = f"{emo} {current_title} {emo}".strip() if emo else current_title
+                    
+                    with report_lock:
+                        processed_count += 1
+                        total_deleted += 1
+                        print(f"❌ No disponible: {rep_title}{source_tag} ({s_id})")
+                    
+                    return (idx, False, f"- {rep_title}{source_tag} (ID: {s_id}) (Playlist: {p_title})")
+
+                # Ejecutar hilos
+                with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
+                    results = list(executor.map(check_worker, enumerate(songs_list)))
+                
+                # Procesar resultados
+                for idx, is_valid, report_line in results:
+                    if is_valid:
+                        valid_indices.append(idx)
+                    else:
+                        if report_line:
+                            unavailable_reports.append(report_line)
+                
+                if len(valid_indices) != len(songs_list):
+                    all_indices = set(range(len(songs_list)))
                     invalid_indices = all_indices - set(valid_indices)
                     to_delete_map[pid] = sorted(list(invalid_indices), reverse=True)
 
         # Si recuperamos algo, guardamos los cambios en los títulos inmediatamente
         if recovered_any:
-            save_playlists(all_playlists)
-            logging.info("\u2705 Se han actualizado los nombres recuperados en el archivo de playlists.")
+            if should_save:
+                save_playlists(all_playlists)
+                logging.info("\u2705 Se han actualizado los nombres recuperados en el archivo de playlists.")
+            else:
+                logging.info("📊 Resultados mostrados arriba (Cambios NO guardados en el JSON).")
 
         print("\n\u2705 Verificaci\u00f3n completada.")
         
@@ -1214,6 +1366,10 @@ class AudioPlayer:
             report_msg = "\n".join(unavailable_reports)
             print(f"\n\u26a0\ufe0f Se han detectado {total_deleted} canciones no disponibles:\n{report_msg}")
             
+            # Solo preguntar por borrar si permitimos guardar cambios
+            if not should_save:
+                return "Escaneo completado en modo lectura."
+
             # Preguntar antes de borrar
             confirm = input("\n\u00bfDeseas eliminar estas canciones de tus playlists? (s/n): ").strip().lower()
             if confirm == 's':
@@ -1230,6 +1386,48 @@ class AudioPlayer:
         return "Todas las canciones verificadas est\u00e1n disponibles."
 
 
+    def ensure_id(self, s_id):
+        print(f"\n🛠️ Diagnóstico de recuperación para ID: {s_id}")
+        
+        # 1. Local Meta (Búsqueda en playlists locales)
+        all_p = load_playlists()
+        local_meta_map = {}
+        for pid, pdata in all_p.items():
+            for s in pdata.get("songs", []):
+                if s["id"] == s_id:
+                    t = s.get("title")
+                    if t and not self._is_title_generic(t):
+                        # Limpiamos iconos si los tiene para el mapa de entrada
+                        clean_t = re.sub(r"[♻️🔎🆘\u267b\ufe0f]", "", t).strip()
+                        local_meta_map[s_id] = clean_t
+                        break
+            if s_id in local_meta_map: break
+        
+        # 2. Rescate Unificado con salida por print
+        recovered_title, source_label = self._rescue_id(s_id, meta_map=local_meta_map, verbose=True, logger_func=print)
+        
+        if recovered_title:
+            if source_label == "meta": r_icon = "♻️"
+            elif source_label == "flat": r_icon = "🔎"
+            else: r_icon = "🆘"
+            print(f"\n✅ {r_icon} TÍTULO RECUPERADO [{source_label}]: {recovered_title}\n")
+        else:
+            print(f"\n❌ No se pudo recuperar el título para {s_id} tras agotar todos los métodos.\n")
+
+        print("\n✅ Diagnóstico finalizado.")
+
+
+    def _find_playlist(self, query):
+        if not query: return None, None
+        all_p = load_playlists()
+        low_q = query.lower()
+        if low_q in all_p: return low_q, all_p[low_q]
+        for pid, data in all_p.items():
+            if low_q in pid.lower() or low_q in data.get("title", "").lower():
+                return pid, data
+        return None, None
+
+
     def check_favorites(self):
         favs = load_favorites()
         if not favs: return "No hay favoritos para verificar"
@@ -1238,7 +1436,7 @@ class AudioPlayer:
         deleted = []
         valid = []
         
-        ydl_opts = {'quiet': True, 'no_warnings': True, 'extract_flat': True}
+        ydl_opts = _get_ytdl_opts(quiet=True)
         with YoutubeDL(ydl_opts) as ydl:
             for f in favs:
                 try:
@@ -1252,322 +1450,160 @@ class AudioPlayer:
             return f"He borrado {len(deleted)} favoritos no disponibles: " + ", ".join(deleted)
         return "Todos tus favoritos están disponibles"
 
-    def play_random_favorite(self, open_in_browser):
-        import random
-        favs = load_favorites()
-        if not favs: return None
-        chosen = random.choice(favs)
-        return self.play_query(chosen["id"], open_in_browser)
 
-    # -----------------------------------------------------------
-    # UNIFIED COMMAND EXECUTOR
-    # -----------------------------------------------------------
-    def execute_command(self, cmd, args, voice_loop=None, open_in_browser=False):
+    def _start_playlist_jit(self, songs, is_fav=False):
+        if not songs: return
+        info = get_search_info(songs[0]["id"])
+        if info:
+            if is_fav: info["_is_fav"] = True
+            else: info["_is_plist"] = True
+            fpath = download_media(info.get("url") or info.get("webpage_url"))
+            if fpath:
+                self._start_playback(info, fpath)
+                with self._lock:
+                    for s in songs[1:]: self.queue.append(({"id": s["id"], "title": s["title"]}, None))
+    def execute_command(self, cmd, args, voice_loop=None):
         """Hub central para procesar comandos de cualquier interfaz."""
         logging.info(f"DEBUG: Executing unified command: {cmd} {args}")
 
-        if cmd == "help":
-            print(AYUDA_MSG)
+        if cmd == "help": print(AYUDA_MSG)
+        elif cmd == "info": print(self.get_playback_info())
+        elif cmd == "play": self.play_query(args["query"])
         
-        elif cmd == "play":
-            self.play_query(args["query"], open_in_browser)
-        
-        elif cmd == "toggle":
-            if self._player and not self._paused:
-                self.pause()
+        elif cmd in ["pause", "resume", "toggle", "stop"]:
+            if cmd == "stop": self.stop()
+            elif cmd == "pause": self.pause()
+            elif cmd == "resume": self.resume()
             else:
-                self.resume()
+                if self._player and not self._paused: self.pause()
+                else: self.resume()
 
-        elif cmd == "pause": 
-            self.pause()
-
-        elif cmd == "resume": 
-            self.resume()
-
-        elif cmd == "stop": 
-            self.stop()
-
-        elif cmd == "next": 
-            self.next_result(open_in_browser)
-
-        elif cmd == "shuffle":
-            with self._lock:
-                if not self.queue:
-                    print("⚠️ La cola está vacía, nada que mezclar.")
-                else:
-                    import random
-                    random.shuffle(self.queue)
-                    # Forzamos reseteo de precarga para que info muestre el nuevo 'Siguiente'
-                    self._preloaded_data = None
-                    self._preloading = False
-                    logging.info("🔀 Cola mezclada aleatoriamente.")
-
-        elif cmd == "history":
-            print("\n📜 ÚLTIMAS CANCIONES:")
-            for i, t in enumerate(reversed(self.history)):
-                print(f"  {i+1}. {t}")
-
-        elif cmd == "add":
-            query = args["query"]
-            
-            # 1. ¿Es una playlist local?
-            all_plist = load_playlists()
-            target_plist = None
-            low_q = query.lower()
-            if low_q in all_plist:
-                target_plist = all_plist[low_q]
-            else:
-                for pid, data in all_plist.items():
-                    if low_q in pid.lower() or low_q in data.get("title", "").lower():
-                        target_plist = data
-                        break
-            
-            if target_plist:
-                songs = target_plist.get("songs", [])
-                logging.info(f"📂 Encolando {len(songs)} canciones de '{target_plist.get('title')}' (JIT)")
-                with self._lock:
-                    for s in songs:
-                        # Añadimos a la cola con fpath=None para descarga bajo demanda
-                        self.queue.append(({"id": s["id"], "title": s["title"]}, None))
-                return
-
-            # 2. Búsqueda normal en YouTube
-            logging.info(f"➕ Buscando para añadir: {query}")
-            def _bg_add():
-                info = None
-                for i in range(10):
-                    candidate = get_search_info(query, index=i)
-                    if not candidate: break
-                    if is_content_allowed(candidate, self.config):
-                        info = candidate
-                        break
-                
-                if info:
-                    with self._lock:
-                        # Encolar solo info
-                        self.queue.append((info, None))
-                        
-                        # UNIFICACIÓN PSA: Si hay una playlist activa, añadirla también allí
-                        if self.plist_mode and self.plist_id:
-                            all_plist = load_playlists()
-                            if self.plist_id in all_plist:
-                                pdata = all_plist[self.plist_id]
-                                if not any(s["id"] == info["id"] for s in pdata.get("songs", [])):
-                                    pdata.setdefault("songs", []).append({"id": info["id"], "title": info["title"]})
-                                    save_playlists(all_plist)
-                                    logging.info(f"📂 [Playlist] '{info['title']}' añadido a '{pdata['title']}'")
-
-                    logging.info(f"✅ [JIT] Añadido a la cola: {info['title']}")
-                else:
-                    logging.warning(f"⚠️ No se encontró nada para: {query}")
-            
-            threading.Thread(target=_bg_add, daemon=True).start()
-
-
-        elif cmd == "volume": 
-            self.set_volume(args["n"])
-
-        elif cmd == "volume_rel":
-            current = int(self._volume * 1000)
-            change = 10 if args["direction"] == "up" else -10
-            new_vol = max(0, min(200, current + change))
-            self.set_volume(new_vol)
-        
-        elif cmd == "mute":
-            self._saved_vol = self._volume
-            self.set_volume(0)
-        
-        elif cmd == "unmute":
-            vol = getattr(self, '_saved_vol', 0.05)
-            self.set_volume(int(vol * 1000))
-
+        elif cmd == "next": self.next_result()
         elif cmd == "replay":
             if self._current_info and self._current_filepath:
                 self._start_playback(self._current_info, self._current_filepath)
 
-        elif cmd == "fav":
-            res = self.add_favorite(self._current_info)
-            logging.info(f"⭐️ {res}")
-
-        elif cmd == "favlast":
-            res = self.add_favorite(self._previous_info)
-            logging.info(f"⭐️ {res}")
-
-        elif cmd == "favlist":
-            text = self.get_favorites_text()
-            print(f"\n⭐ MIS FAVORITOS:\n{text}")
-
-        elif cmd == "playfav":
-            favs = load_favorites()
-            if not favs: return
-            self.fav_playlist_mode = True
-            self.fav_index = 0
-            # Empezamos con el primero
-            info = get_search_info(favs[0]["id"], index=0)
-            if info:
-                info["_is_fav_playlist"] = True
-                fpath = download_media(info.get("page_url") or info.get("url"), prefix=LOCAL_PREFIX)
-                if fpath: self._start_playback(info, fpath)
-
-        elif cmd == "favcheck":
-            res = self.check_favorites()
-            logging.info(f"🔍 {res}")
-
-        elif cmd == "import":
-            res = self.import_playlist(args["url"])
-            logging.info(f"📥 {res}")
-
-        elif cmd == "playlist":
-            all_plist = load_playlists()
-            if not all_plist:
-                print("⚠️ No hay playlists guardadas. Usa 'import {url}' primero.")
-                return
-                
-            query = args.get("q")
-            if not query:
-                print("\n📁 PLAYLISTS DISPONIBLES:")
-                for pid, data in all_plist.items():
-                    print(f"  - [{pid}] {data.get('title')} ({len(data.get('songs',[]))} canciones)")
-                print("\nUsa 'pp [nombre/id]' para reproducir una.")
-                return
-
-            # Buscar mejor coincidencia
-            target_id = None
-            low_q = query.lower()
-            if low_q in all_plist:
-                target_id = low_q
-            else:
-                for pid, data in all_plist.items():
-                    if low_q in pid.lower() or low_q in data.get("title", "").lower():
-                        target_id = pid
-                        break
-            
-            if not target_id:
-                print(f"⚠️ No se encontró ninguna playlist que coincida con '{query}'")
-                return
-
-            plist_data = all_plist[target_id]
-            songs = plist_data.get("songs", [])
-            if not songs:
-                print(f"⚠️ La playlist '{plist_data.get('title')}' está vacía.")
-                return
-
-            self.plist_mode = True
-            self.fav_playlist_mode = False
-            self.plist_id = target_id
-            self.plist_title = plist_data.get("title")
-            
-            # Limpiar cola actual para priorizar la playlist
+        elif cmd == "shuffle":
             with self._lock:
-                self.queue.clear()
-            
-            logging.info(f"▶️ Reproduciendo playlist vía Cola: {self.plist_title}")
-            
-            # Reproducir la primera canción inmediatamente
-            first_song = songs[0]
-            info = get_search_info(first_song["id"], index=0)
-            if info:
-                info["_is_plist"] = True
-                fpath = download_media(info.get("page_url") or info.get("url"), prefix=LOCAL_PREFIX)
-                if fpath: 
-                    self._start_playback(info, fpath)
-                    
-                    # Encolar el resto como metadatos (JIT)
-                    remaining = songs[1:]
-                    if remaining:
-                        with self._lock:
-                            for s in remaining:
-                                self.queue.append(({"id": s["id"], "title": s["title"]}, None))
-                        logging.info(f"📂 {len(remaining)} canciones restantes de '{self.plist_title}' encoladas (JIT)")
+                if not self.queue: logging.info("⚠️ Cola vacía")
+                else:
+                    random.shuffle(self.queue)
+                    self._preloaded_data = None
+                    self._preloading = False
+                    logging.info(f"🔀 Cola mezclada ({len(self.queue)})")
 
+        elif cmd == "history":
+            print("\n📜 ÚLTIMAS CANCIONES:")
+            for i, t in enumerate(reversed(self.history)): print(f"  {i+1}. {t}")
 
-            
-        elif cmd == "playlists":
-            all_plist = load_playlists()
-            if not all_plist:
-                print("\n⚠️ No hay playlists guardadas.")
+        elif cmd in ["volume", "volume_rel", "mute", "unmute"]:
+            if cmd == "volume": self.set_volume(args["n"])
+            elif cmd == "mute": (setattr(self, '_saved_vol', self._volume), self.set_volume(0))
+            elif cmd == "unmute": self.set_volume(int(getattr(self, '_saved_vol', 0.05) * 1000))
             else:
-                print("\n📁 TUS PLAYLISTS:")
-                for pid, data in all_plist.items():
-                    print(f"  - [{pid}] {data.get('title')} ({len(data.get('songs',[]))} canciones)")
-                print("\nUsa 'pp [nombre]' para sonar una, o 'add [nombre]' para encolar.")
+                change = 10 if args["direction"] == "up" else -10
+                self.set_volume(max(0, min(200, int(self._volume * 1000) + change)))
 
-        elif cmd == "playlist_remove":
-            query = args.get("q")
-            if not query:
-                print("⚠️ Especifica el nombre de la playlist a eliminar.")
+        elif cmd in ["fav", "favlast", "favlist"]:
+            if cmd == "favlist": print(f"\n⭐ MIS FAVORITOS:\n{self.get_favorites_text()}")
+            else: logging.info(f"⭐️ {self.add_favorite(self._current_info if cmd=='fav' else self._previous_info)}")
+
+        elif cmd == "add":
+            query = args["query"]
+            pid, pdata = self._find_playlist(query)
+            if pdata:
+                songs = pdata.get("songs", [])
+                logging.info(f"📂 Encolando {len(songs)} canciones de '{pdata.get('title')}' (JIT)")
+                with self._lock:
+                    for s in songs: self.queue.append(({"id": s["id"], "title": s["title"]}, None))
                 return
-            
-            all_plist = load_playlists()
-            target_id = None
-            low_q = query.lower()
-            if low_q in all_plist:
-                target_id = low_q
-            else:
-                for pid, data in all_plist.items():
-                    if low_q in pid.lower() or low_q in data.get("title", "").lower():
-                        target_id = pid
-                        break
-            
-            if not target_id:
-                print(f"⚠️ No se encontró ninguna playlist que coincida con '{query}'")
+
+            logging.info(f"➕ Buscando para añadir: {query}")
+            def _bg_add():
+                info = None
+                for i in range(10):
+                    cand = get_search_info(query, index=i)
+                    if cand and is_content_allowed(cand, self.config):
+                        info = cand; break
+                if info:
+                    with self._lock:
+                        self.queue.append((info, None))
+                        if self.plist_mode and self.plist_id:
+                            all_p = load_playlists()
+                            if self.plist_id in all_p:
+                                if not any(s["id"] == info["id"] for s in all_p[self.plist_id].get("songs", [])):
+                                    all_p[self.plist_id].setdefault("songs", []).append({"id": info["id"], "title": info["title"]})
+                                    save_playlists(all_p)
+                    logging.info(f"✅ Añadido a la cola: {info['title']}")
+                else: logging.warning(f"⚠️ No se encontró nada para: {query}")
+            threading.Thread(target=_bg_add, daemon=True).start()
+
+        elif cmd in ["playlist", "playlists", "playlist_remove", "import", "favcheck", "favrandom", "playfav", "playlistcheck", "playlistcheck_deep", "playlistcheck_recovered", "playlistcheck_deep_recovered"]:
+            if cmd == "playlists":
+                all_p = load_playlists()
+                if not all_p: print("\n⚠️ No hay playlists.")
+                else: 
+                    print("\n📁 TUS PLAYLISTS:")
+                    for pid, data in all_p.items(): print(f"  - [{pid}] {data.get('title')} ({len(data.get('songs',[]))} canciones)")
                 return
+
+            if cmd == "import": logging.info(f"📥 {self.import_playlist(args['url'])}")
+            elif cmd == "favcheck": logging.info(f"🔍 {self.check_favorites()}")
+            elif cmd in ["playlistcheck", "playlistcheck_deep", "playlistcheck_recovered", "playlistcheck_deep_recovered"]:
+                deep = (cmd in ["playlistcheck_deep", "playlistcheck_deep_recovered"])
+                recov = (cmd in ["playlistcheck_recovered", "playlistcheck_deep_recovered"])
+                logging.info(f"🔍 {self.check_playlists(query=args.get('q'), deep=deep, only_recovered=recov)}")
+            elif cmd == "favrandom" or cmd == "playfav":
+                favs = load_favorites()
+                if not favs: return print("⚠️ Lista vacía.")
+                if cmd == "favrandom": random.shuffle(favs)
+                self.plist_mode, self.plist_id, self.plist_title = True, "favs", "Favoritos" + (" (Aleatorio)" if cmd == "favrandom" else "")
+                with self._lock: self.queue.clear()
+                self._start_playlist_jit(favs, is_fav=True)
             
-            p_title = all_plist[target_id].get("title", target_id)
-            confirm = input(f"¿Seguro que quieres eliminar la playlist '{p_title}'? (s/n): ").strip().lower()
-            if confirm == 's':
-                del all_plist[target_id]
-                save_playlists(all_plist)
-                if self.plist_id == target_id:
-                    self.plist_mode = False
-                    self.plist_id = None
-                print(f"✅ Playlist '{p_title}' eliminada.")
-            else:
-                print("Operación cancelada.")
+            else: # playlist o playlist_remove
+                query = args.get("q")
+                if not query and cmd == "playlist":
+                    all_p = load_playlists()
+                    for pid, data in all_p.items(): print(f"  - [{pid}] {data.get('title')} ({len(data.get('songs',[]))} canciones)")
+                    return
+                
+                target_id, pdata = self._find_playlist(query)
+                if not target_id: return print(f"⚠️ No se encontró '{query}'")
+                
+                if cmd == "playlist_remove":
+                    if input(f"¿Eliminar '{pdata['title']}'? (s/n): ").lower() == 's':
+                        all_p = load_playlists(); del all_p[target_id]; save_playlists(all_p); print("✅ Eliminada.")
+                else:
+                    self.plist_mode, self.plist_id, self.plist_title = True, target_id, pdata.get("title")
+                    with self._lock: self.queue.clear()
+                    self._start_playlist_jit(pdata.get("songs", []))
 
-        elif cmd == "playlistcheck":
-            res = self.check_playlists(args.get("q"))
-            logging.info(f"🔍 {res}")
-
-        elif cmd == "playlistcheck_deep":
-            res = self.check_playlists(args.get("q"), deep=True)
-            logging.info(f"🔍 {res}")
-
-        elif cmd == "radio": self.toggle_radio(args["enabled"])
-        elif cmd == "filtros": self.toggle_filters(args["enabled"])
-        elif cmd == "info": print(self.get_playback_info())
-        
+        elif cmd in ["radio", "filtros"]: getattr(self, f"toggle_{cmd}")(args["enabled"])
         elif cmd == "force":
             kw = self.set_forced_filter(args["f"])
-            if kw: self.play_query(kw, open_in_browser)
-
+            if kw: self.play_query(kw)
         elif cmd == "listen":
-            enabled = args["enabled"]
-            self.config["listen_enabled"] = enabled
+            self.config["listen_enabled"] = args["enabled"]
             save_config(self.config)
-            status = "activado" if enabled else "desactivado"
-            logging.info(f"🎤 Micrófono {status}")
-
-        elif cmd == "exit":
-            self.stop()
-            print("\n👋 ¡Hasta pronto!")
-            os._exit(0)
-
-        elif cmd == "set_mic":
-            idx = resolve_mic_index(args["n"])
-            self.config["microphone_index"] = idx
-            save_config(self.config)
-
-        elif cmd == "list_mics":
-             list_microphones()
+            logging.info(f"🎤 Micrófono {'activado' if args['enabled'] else 'desactivado'}")
+        elif cmd == "exit": self.stop(); print("\n👋 ¡Hasta pronto!"); os._exit(0)
+        elif cmd in ["set_mic", "list_mics"]:
+            if cmd == "set_mic":
+                idx = resolve_mic_index(args["n"])
+                self.config["microphone_index"] = idx
+                save_config(self.config)
+            else: list_microphones()
+        
+        elif cmd == "ensure":
+            self.ensure_id(args["id"])
 
 # -----------------------------------------------------------
 # Bucle de voz
 # -----------------------------------------------------------
 class VoiceLoop:
-    def __init__(self, player: AudioPlayer, open_in_browser: bool = False, hotword: str | None = None):
+    def __init__(self, player: AudioPlayer, hotword: str | None = None):
         self.player = player
-        self.open_in_browser = open_in_browser
         self.parser = CommandParser()
         if isinstance(hotword, str): self.hotword = [hotword.lower()]
         elif isinstance(hotword, list): self.hotword = [h.lower() for h in hotword if isinstance(h, str)]
@@ -1640,10 +1676,10 @@ class VoiceLoop:
                 time.sleep(1)
 
     def _exec_cmd(self, cmd, args):
-        self.player.execute_command(cmd, args, voice_loop=self, open_in_browser=self.open_in_browser)
+        self.player.execute_command(cmd, args, voice_loop=self)
 
 
-def cli_loop(player: AudioPlayer, open_in_browser: bool, hotword: str | None, voice_loop: 'VoiceLoop' = None):
+def cli_loop(player: AudioPlayer, hotword: str | None = None, voice_loop: 'VoiceLoop' = None):
     parser = CommandParser()
     while True:
         try:
@@ -1662,7 +1698,7 @@ def cli_loop(player: AudioPlayer, open_in_browser: bool, hotword: str | None, vo
                 # logging.debug(f"DEBUG: No se reconoció comando en: '{line}'")
                 continue
             
-            player.execute_command(cmd, args, voice_loop=voice_loop, open_in_browser=open_in_browser)
+            player.execute_command(cmd, args, voice_loop=voice_loop)
 
         except (KeyboardInterrupt, EOFError):
             print("\n👋 ¡Hasta pronto! (Interrumpido)")
@@ -1700,7 +1736,6 @@ def check_for_updates():
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--texto", action="store_true")
-    ap.add_argument("--navegador", action="store_true")
     ap.add_argument("--radio-init", choices=["on", "off"], default="on")
     ap.add_argument("--micro-init", choices=["on", "off"], default=None)
     ap.add_argument("--listar-micros", action="store_true")
@@ -1712,7 +1747,7 @@ def main():
 
 
 
-    cleanup_temp_files(prefix=LOCAL_PREFIX)
+    cleanup_temp_files(prefix=TEMP_AUDIO_PREFIX)
     check_for_updates()
     player = AudioPlayer(radio_enabled=(args.radio_init == "on"))
     
@@ -1741,11 +1776,11 @@ def main():
     threading.Thread(target=update_loop, daemon=True).start()
 
     # --- Start Voice Loop in Thread ---
-    v_loop = VoiceLoop(player, args.navegador, hotwords)
+    v_loop = VoiceLoop(player, hotwords)
     threading.Thread(target=v_loop.run, daemon=True).start()
 
     # --- Main Thread: CLI Loop (Always active now) ---
-    cli_loop(player, args.navegador, hotwords[0] if hotwords else None, voice_loop=v_loop)
+    cli_loop(player, hotwords[0] if hotwords else None, voice_loop=v_loop)
 
 if __name__ == "__main__":
     try:
