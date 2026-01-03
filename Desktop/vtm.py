@@ -3,7 +3,7 @@
 vtm.py — Reproducir música de YouTube mediante comandos de voz o texto (ES)
 """
 
-VTM_VERSION = "0.9.0"
+VTM_VERSION = "0.9.8"
 UPDATE_URL = "https://raw.githubusercontent.com/Cicker21/VTM/refs/heads/main/Desktop/vtm.py"
 
 import argparse
@@ -773,7 +773,8 @@ class AudioPlayer:
         
         # 1. Prioridad: COLA
         with self._lock:
-            if self.queue:
+            # Bucle para saltar canciones fallidas
+            while self.queue:
                 info, fpath = self.queue.pop(0)
                 if not fpath:
                     logging.info(f"⏳ Descargando JIT para el siguiente en cola: {info['title']}")
@@ -785,6 +786,7 @@ class AudioPlayer:
                     fpath = download_media(info.get("page_url") or info.get("url"), prefix=TEMP_AUDIO_PREFIX)
                 
                 if fpath: return (info, fpath)
+                logging.warning(f"⚠️ No se pudo reproducir '{info.get('title')}' de la cola. Saltando al siguiente...")
         
         # 2. Modo Playlist
         if self.plist_mode:
@@ -1455,13 +1457,20 @@ class AudioPlayer:
         if not songs: return
         info = get_search_info(songs[0]["id"])
         if info:
-            if is_fav: info["_is_fav"] = True
+            # Fix: usar nombre de flag consistente con _start_playback
+            if is_fav: info["_is_fav_playlist"] = True
             else: info["_is_plist"] = True
+            
             fpath = download_media(info.get("url") or info.get("webpage_url"))
             if fpath:
                 self._start_playback(info, fpath)
                 with self._lock:
-                    for s in songs[1:]: self.queue.append(({"id": s["id"], "title": s["title"]}, None))
+                    for s in songs[1:]: 
+                        # Propagar flags para mantener contexto
+                        meta = {"id": s["id"], "title": s["title"]}
+                        if is_fav: meta["_is_fav_playlist"] = True
+                        else: meta["_is_plist"] = True
+                        self.queue.append((meta, None))
     def execute_command(self, cmd, args, voice_loop=None):
         """Hub central para procesar comandos de cualquier interfaz."""
         logging.info(f"DEBUG: Executing unified command: {cmd} {args}")
@@ -1722,14 +1731,19 @@ def check_for_updates():
             if match:
                 remote_version = match.group(1)
                 if remote_version != VTM_VERSION:
-                    print("\n" + "!" * 60)
-                    print(f"🚀 ¡NUEVA VERSIÓN DISPONIBLE EN GITHUB! ({remote_version})")
-                    print(f"   Versión instalada: {VTM_VERSION}")
-                    print(f"   Link: https://github.com/Cicker21/VTM")
-                    print("!" * 60 + "\n")
-                    time.sleep(2)
-                else:
-                    logging.info("✅ VTM está actualizado.")
+                    try:
+                        def parse_v(v): return tuple(map(int, v.split(".")))
+                        if parse_v(remote_version) > parse_v(VTM_VERSION):
+                            print("\n" + "!" * 60)
+                            print(f"🚀 ¡NUEVA VERSIÓN DISPONIBLE EN GITHUB! ({remote_version})")
+                            print(f"   Versión instalada: {VTM_VERSION}")
+                            print(f"   Link: https://github.com/Cicker21/VTM")
+                            print("!" * 60 + "\n")
+                            time.sleep(2)
+                        else:
+                            logging.info(f"✅ VTM está actualizado (Local: {VTM_VERSION}, Remote: {remote_version}).")
+                    except:
+                        pass # Fallback silencioso si el parseo falla
     except Exception as e:
         logging.warning(f"⚠️ No se pudo comprobar actualizaciones: {e}")
 
