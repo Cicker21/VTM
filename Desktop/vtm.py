@@ -3,7 +3,7 @@
 vtm.py — Reproducir música de YouTube mediante comandos de voz o texto (ES)
 """
 
-VTM_VERSION = "0.9.8"
+VTM_VERSION = "0.10.0"
 UPDATE_URL = "https://raw.githubusercontent.com/Cicker21/VTM/refs/heads/main/Desktop/vtm.py"
 
 import argparse
@@ -1741,9 +1741,14 @@ def check_for_updates():
                             print("!" * 60 + "\n")
                             time.sleep(2)
                         else:
-                            logging.info(f"✅ VTM está actualizado (Local: {VTM_VERSION}, Remote: {remote_version}).")
-                    except:
-                        pass # Fallback silencioso si el parseo falla
+                            print(f"\n✅ Tienes la última versión ({VTM_VERSION}).\n")
+                    except Exception as e:
+                        logging.warning(f"⚠️ No se pudo comprobar actualizaciones: {e}")
+                        pass 
+                else:
+                    print(f"\n✅ Tienes la última versión ({VTM_VERSION}).\n")
+            else:
+                print(f"\n✅ Tienes la última versión ({VTM_VERSION}).\n")
     except Exception as e:
         logging.warning(f"⚠️ No se pudo comprobar actualizaciones: {e}")
 
