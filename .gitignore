@@ -2,13 +2,14 @@
 *.bat
 *.pickle
 *.json
+
 !config.json
 !config_discord.json
+!.gitignore
 
 # Python cache
 __pycache__/
 *.pyc
 
 # Whitelist specific bat files
-!upload.bat
 !Desktop/VTM.bat
