@@ -1,4 +1,5 @@
 @echo off
+yt-dlp --rm-cache-dir
 setlocal
 cd /d "%~dp0"
 echo Levantando VTM...

@@ -9,13 +9,14 @@
         "playlist",
         "mix",
         "tutorial",
-        "compilation"
+        "compilation",
+	"en directo"
     ],
     "max_duration_seconds": 600,
     "hotword": "rafa",
     "filters_enabled": true,
     "tts_volume": 1.0,
-    "volume": 0.2,
+    "volume": 0.12,
     "microphone_index": 1,
     "forced_keyword": null,
     "hotwords": [

@@ -3,7 +3,7 @@
 vtm.py — Reproducir música de YouTube mediante comandos de voz o texto (ES)
 """
 
-VTM_VERSION = "0.10.0"
+VTM_VERSION = "0.10.3"
 UPDATE_URL = "https://raw.githubusercontent.com/Cicker21/VTM/refs/heads/main/Desktop/vtm.py"
 
 import argparse
@@ -63,7 +63,7 @@ AYUDA_MSG = (
     "- fav / me gusta     Guardar actual en favoritos\n"
     "- favlast            Guardar la anterior en favoritos\n"
     "- fp / playfav       Reproducir tus favoritos\n"
-    "- rf / favrandom     Modo aleatorio de favoritos\n"
+    "- fr / favrandom     Modo aleatorio de favoritos\n"
     "- favlist            Listar todos tus favoritos\n"
     "- favcheck           Verificar disponibilidad de favoritos\n\n"
     
@@ -307,7 +307,7 @@ class CommandParser:
     RE_FAVLIST = re.compile(r"^(favlist|lista de favoritos|mis favoritos)$", re.I)
     RE_PLAYFAV = re.compile(r"^(playfav|favplay|reproduce favoritos|pon favoritos|favoritos|fp|pf)$", re.I)
     RE_FAVCHECK = re.compile(r"^(favcheck|checkfavs|verificar favoritos)$", re.I)
-    RE_FAV_RANDOM = re.compile(r"^(rf|favrandom)$", re.I)
+    RE_FAV_RANDOM = re.compile(r"^(fr|favrandom)$", re.I)
     RE_IMPORT = re.compile(r"^(import|importar)\s+(?P<url>https?://[^\s]+)$", re.I)
     RE_PLAYLIST = re.compile(r"^(pp|playlist|lista)(\s+(?P<q>.+))?$", re.I)
     RE_PLAYLIST_REMOVE = re.compile(r"^(pr|ppremove|playlistremove)(\s+(?P<q>.+))?$", re.I)
@@ -548,8 +548,9 @@ class AudioPlayer:
             time.sleep(0.5)
 
             try:
-                # Inicializamos pausado y con volumen 0 para evitar COMPLETAMENTE el spike
-                ff_opts = {'vn': True, 'volume': 0.0}
+                # Usamos filtro afade para evitar el "blast" inicial
+                # volume se setea luego, pero el fade in garantiza silencio al principio
+                ff_opts = {'vn': True, 'af': 'afade=t=in:ss=0:d=1'}
                 logging.info(f"DEBUG: MediaPlayer init (paused=True) with: {filepath}")
                 try:
                     # Usamos una variable local para evitar que otros hilos accedan a un objeto a medio inicializar
@@ -563,37 +564,33 @@ class AudioPlayer:
                     return None
                 
                 # Un breve respiro para que el objeto se asiente internamente
-                time.sleep(0.2)
+                time.sleep(0.1)
                 
-                # Seteamos el volumen objetivo mientras está pausado
+                # Seteamos el volumen objetivo directamente
                 if self._player:
-                    logging.info(f"DEBUG: Setting volume to {self._volume}")
                     try:
+                        # Primero volumen, luego Despausar
+                        logging.info(f"DEBUG: Setting initial volume to {self._volume}")
                         self._player.set_volume(self._volume)
-                    except Exception as ev:
-                        logging.error(f"DEBUG: Error setting initial volume: {ev}")
-                    
-                    time.sleep(0.1)
-                    
-                    # Quitamos la pausa
-                    logging.info("DEBUG: Attempting to unpause player...")
-                    try:
+                        
+                        # Pequeña espera para asegurar que el volumen se aplicó antes de soltar el audio
+                        time.sleep(0.1) 
+                        
                         self._player.set_pause(False)
-                        logging.info("DEBUG: Player unpaused successfully.")
+                        logging.info("DEBUG: Player unpaused with fade-in.")
                     except Exception as ep:
-                        logging.error(f"DEBUG: Error unpausing player: {ep}")
+                        logging.error(f"DEBUG: Error starting player: {ep}")
                 else:
                     logging.error("DEBUG: self._player is None after init!")
                 
-                # Forzamos el volumen un par de veces más por si acaso
+                # Forzamos el volumen una vez mas por seguridad en hilo aparte
                 def force_volume():
-                    for _ in range(8):
-                        time.sleep(0.2)
-                        with self._lock:
-                            if self._player:
-                                try:
-                                    self._player.set_volume(self._volume)
-                                except: pass
+                    time.sleep(0.5)
+                    with self._lock:
+                        if self._player:
+                            try:
+                                self._player.set_volume(self._volume)
+                            except: pass
                 
                 threading.Thread(target=force_volume, daemon=True).start()
                 
@@ -648,11 +645,21 @@ class AudioPlayer:
             
             c_title = candidate.get("title", "Sin título")
             
+            # Si es el MISSISMO video (ID), saltamos
+            if self._current_id and candidate.get("id") == self._current_id:
+                logging.info(f"⏳ Saltando (Mismo ID): {c_title}")
+                continue
+
+            # Si es el MISSISMO video (ID), saltamos
+            if self._current_id and candidate.get("id") == self._current_id:
+                logging.info(f"⏳ Saltando (Mismo ID): {c_title}")
+                continue
+
             # Si ya está sonando algo muy similar, lo saltamos para buscar el siguiente de Metrika, etc.
             if self._current_title:
                 similar, _ = self._is_too_similar(self._current_title, c_title)
                 if similar:
-                    logging.info(f"⏳ Saltando (Ya está sonando): {c_title}")
+                    logging.info(f"⏳ Saltando (Demasiado similar): {c_title}")
                     continue
 
             if is_content_allowed(candidate, self.config):
@@ -674,7 +681,7 @@ class AudioPlayer:
         self._radio_exhausted = False
         return self._start_playback(info, filepath)
 
-    def _is_too_similar(self, title1, title2, threshold=0.45):
+    def _is_too_similar(self, title1, title2, threshold=0.85):
         if not title1 or not title2: return False
         t1, t2 = title1.lower(), title2.lower()
         if self.forced_keyword:
@@ -1510,7 +1517,7 @@ class AudioPlayer:
             elif cmd == "mute": (setattr(self, '_saved_vol', self._volume), self.set_volume(0))
             elif cmd == "unmute": self.set_volume(int(getattr(self, '_saved_vol', 0.05) * 1000))
             else:
-                change = 10 if args["direction"] == "up" else -10
+                change = 50 if args["direction"] == "up" else -50
                 self.set_volume(max(0, min(200, int(self._volume * 1000) + change)))
 
         elif cmd in ["fav", "favlast", "favlist"]:
