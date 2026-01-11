@@ -3,7 +3,7 @@
 vtm.py — Reproducir música de YouTube mediante comandos de voz o texto (ES)
 """
 
-VTM_VERSION = "0.10.3"
+VTM_VERSION = "0.10.8"
 UPDATE_URL = "https://raw.githubusercontent.com/Cicker21/VTM/refs/heads/main/Desktop/vtm.py"
 
 import argparse
@@ -57,8 +57,7 @@ AYUDA_MSG = (
     "- import [url]       Importar lista de YouTube\n"
     "- pp [nombre]        Reproducir una de tus listas\n"
     "- pr [nombre]        Eliminar una playlist\n"
-    "- pc / pcr / pcd / pcdr [q] Verificar playlists (Normal / Recov / Deep / DeepRecov)\n\n"
-    
+  
     "⭐️ FAVORITOS\n"
     "- fav / me gusta     Guardar actual en favoritos\n"
     "- favlast            Guardar la anterior en favoritos\n"
@@ -74,7 +73,13 @@ AYUDA_MSG = (
     "- con/sin filtros    Activar/Quitar filtros de YouTube\n"
     "- forzar [palabra]   Filtrar radio por una palabra clave\n"
     "- h / ayuda / help   Mostrar esta lista\n"
-    "- salir / terminar   Cerrar la aplicación"
+    "- salir / terminar   Cerrar la aplicación\n\n"
+
+    "🧹 LIMPIEZA DE PLAYLISTS\n"
+    "- pc  [query]        Playlist Check: Verificar disponibilidad de canciones\n"
+    "- pcr [query]        Playlist Check Recovered: Ver solo canciones recuperadas\n"
+    "- pcd [query]        Playlist Check Deep: Verificar disponibilidad de canciones en modo agresivo\n"
+    "- pcdr [query]       Playlist Check Deep Recovered: Ver solo canciones recuperadas en modo agresivo\n"
 )
 
 # --- Logger de yt-dlp ---
@@ -118,7 +123,10 @@ def load_config():
         "forced_keyword": None,
         "shorts_keywords": ["#shorts", "shorts", "reels"],
         "max_shorts_duration": 65,
-        "listen_enabled": True
+        "listen_enabled": True,
+        "max_volume": 0.2,
+        "min_volume": 0.0,
+        "rel_steps": 50
     }
     if not os.path.exists(CONFIG_FILE):
         return defaults
@@ -140,6 +148,27 @@ def load_config():
                 data["hotwords"] = ["rafa"]
 
             data["forced_keyword"] = None # Reset forced keyword
+
+            # Validar límites de volumen: 0 <= min <= max <= 1
+            min_v = data.get("min_volume", 0.0)
+            max_v = data.get("max_volume", 0.2)
+            
+            # Asegurar que están en [0, 1]
+            min_v = max(0.0, min(1.0, min_v))
+            max_v = max(0.0, min(1.0, max_v))
+            
+            # Asegurar min <= max
+            if min_v > max_v:
+                logging.warning(f"⚠️ Configuración de volumen inválida (min > max). Ajustando...")
+                min_v = max_v
+            
+            data["min_volume"] = min_v
+            data["max_volume"] = max_v
+            
+            # Ajustar volumen actual a los nuevos límites
+            curr_v = data.get("volume", 0.05)
+            data["volume"] = max(min_v, min(max_v, curr_v))
+
             return data
     except Exception as e:
         logging.error(f"Error cargando config: {e}")
@@ -516,7 +545,7 @@ class AudioPlayer:
         self.radio_mode = enabled
         logging.info(f"📻 Radio {'activada' if enabled else 'desactivada'}")
 
-    def toggle_filters(self, enabled: bool | str):
+    def toggle_filtros(self, enabled: bool | str):
         if enabled == "toggle":
             enabled = not self.config.get("filters_enabled", True)
         self.config["filters_enabled"] = enabled
@@ -548,51 +577,32 @@ class AudioPlayer:
             time.sleep(0.5)
 
             try:
-                # Usamos filtro afade para evitar el "blast" inicial
-                # volume se setea luego, pero el fade in garantiza silencio al principio
-                ff_opts = {'vn': True, 'af': 'afade=t=in:ss=0:d=1'}
-                logging.info(f"DEBUG: MediaPlayer init (paused=True) with: {filepath}")
-                try:
-                    # Usamos una variable local para evitar que otros hilos accedan a un objeto a medio inicializar
-                    new_player = MediaPlayer(filepath, paused=True, ff_opts=ff_opts)
-                    if not new_player:
-                        logging.error("DEBUG: MediaPlayer returned None without Exception!")
-                        return None
-                    self._player = new_player
-                except Exception as e:
-                    logging.error(f"❌ Fallo crítico al crear MediaPlayer: {e}")
+                # NUCLEAR OPTION: Aplicamos el volumen directamente en el decodificador (FFmpeg)
+                # volume={self._volume}: El audio ya sale 'capado' de origen. Imposible que pegue picos.
+                af_filter = f'volume={self._volume},afade=t=in:ss=0:d=0.5'
+                ff_opts = {'vn': True, 'af': af_filter}
+                
+                logging.info(f"DEBUG: MediaPlayer init (paused=True, filter-vol={self._volume}) with: {filepath}")
+                new_player = MediaPlayer(filepath, paused=True, ff_opts=ff_opts)
+                if not new_player:
+                    logging.error("DEBUG: MediaPlayer returned None!")
                     return None
-                
-                # Un breve respiro para que el objeto se asiente internamente
-                time.sleep(0.1)
-                
-                # Seteamos el volumen objetivo directamente
-                if self._player:
-                    try:
-                        # Primero volumen, luego Despausar
-                        logging.info(f"DEBUG: Setting initial volume to {self._volume}")
-                        self._player.set_volume(self._volume)
-                        
-                        # Pequeña espera para asegurar que el volumen se aplicó antes de soltar el audio
-                        time.sleep(0.1) 
-                        
-                        self._player.set_pause(False)
-                        logging.info("DEBUG: Player unpaused with fade-in.")
-                    except Exception as ep:
-                        logging.error(f"DEBUG: Error starting player: {ep}")
-                else:
-                    logging.error("DEBUG: self._player is None after init!")
-                
-                # Forzamos el volumen una vez mas por seguridad en hilo aparte
-                def force_volume():
-                    time.sleep(0.5)
+                self._player = new_player
+
+                # Hilo de arranque seguro: Esperar a que se asiente -> Re-confirmar Vol -> Unpause
+                def force_volume_and_play():
+                    time.sleep(0.4) # Seguridad anti-crash
                     with self._lock:
                         if self._player:
                             try:
                                 self._player.set_volume(self._volume)
-                            except: pass
+                                time.sleep(0.05) # Pequeño buffer
+                                self._player.set_pause(False) # AHORA soltamos el audio
+                                logging.info("DEBUG: Audio released (Safety sequence done).")
+                            except Exception as ep:
+                                logging.error(f"DEBUG: Error in delayed play: {ep}")
                 
-                threading.Thread(target=force_volume, daemon=True).start()
+                threading.Thread(target=force_volume_and_play, daemon=True).start()
                 
                 self._previous_info = self._current_info
                 self._current_filepath = filepath
@@ -645,12 +655,7 @@ class AudioPlayer:
             
             c_title = candidate.get("title", "Sin título")
             
-            # Si es el MISSISMO video (ID), saltamos
-            if self._current_id and candidate.get("id") == self._current_id:
-                logging.info(f"⏳ Saltando (Mismo ID): {c_title}")
-                continue
-
-            # Si es el MISSISMO video (ID), saltamos
+            # Si es el MISMO video (ID) que está sonando, saltamos
             if self._current_id and candidate.get("id") == self._current_id:
                 logging.info(f"⏳ Saltando (Mismo ID): {c_title}")
                 continue
@@ -948,13 +953,15 @@ class AudioPlayer:
 
     def set_volume(self, percent: int):
         with self._lock:
-            # Ahora permitimos hasta 200 (0.2)
-            v = max(0.0, min(0.2, percent / 1000.0))
+            max_v = self.config.get("max_volume", 0.2)
+            min_v = self.config.get("min_volume", 0.0)
+            v = max(min_v, min(max_v, percent / 1000.0))
             self._volume = v
             self.config["volume"] = v
             save_config(self.config)
             if self._player: self._player.set_volume(v)
-            logging.info(f"🔊 Volumen: {int(v*1000)}%")
+            # Mostramos el porcentaje real sobre 1000 para consistencia visual con el comando
+            logging.info(f"🔊 Volumen: {int(v*1000)}% (Límite: {int(min_v*1000)}-{int(max_v*1000)}%)")
 
     def add_favorite(self, info):
         if not info: return "No hay canción para añadir"
@@ -1517,8 +1524,9 @@ class AudioPlayer:
             elif cmd == "mute": (setattr(self, '_saved_vol', self._volume), self.set_volume(0))
             elif cmd == "unmute": self.set_volume(int(getattr(self, '_saved_vol', 0.05) * 1000))
             else:
-                change = 50 if args["direction"] == "up" else -50
-                self.set_volume(max(0, min(200, int(self._volume * 1000) + change)))
+                step = self.config.get("rel_steps", 50)
+                change = step if args["direction"] == "up" else -step
+                self.set_volume(int(self._volume * 1000) + change)
 
         elif cmd in ["fav", "favlast", "favlist"]:
             if cmd == "favlist": print(f"\n⭐ MIS FAVORITOS:\n{self.get_favorites_text()}")
@@ -1598,7 +1606,16 @@ class AudioPlayer:
         elif cmd in ["radio", "filtros"]: getattr(self, f"toggle_{cmd}")(args["enabled"])
         elif cmd == "force":
             kw = self.set_forced_filter(args["f"])
-            if kw: self.play_query(kw)
+            if kw:
+                if not self.play_query(kw) and self.config.get("filters_enabled", True):
+                    try:
+                        ans = input("\n⚠️ La búsqueda falló por filtros o duración. ¿Reintentar SIN filtros? (s/n): ").strip().lower()
+                        if ans in ["s", "y", "si"]:
+                            self.config["filters_enabled"] = False
+                            save_config(self.config)
+                            logging.info("🛡️ Filtros desactivados. Reintentando...")
+                            self.play_query(kw)
+                    except (EOFError, KeyboardInterrupt): pass
         elif cmd == "listen":
             self.config["listen_enabled"] = args["enabled"]
             save_config(self.config)

@@ -10,15 +10,15 @@
         "mix",
         "tutorial",
         "compilation",
-	"en directo"
+        "en directo"
     ],
     "max_duration_seconds": 600,
     "hotword": "rafa",
-    "filters_enabled": true,
+    "filters_enabled": false,
     "tts_volume": 1.0,
-    "volume": 0.12,
+    "volume": 0.2,
     "microphone_index": 1,
-    "forced_keyword": null,
+    "forced_keyword": "eurobeat",
     "hotwords": [
         "rafa"
     ],
@@ -29,6 +29,11 @@
     ],
     "max_shorts_duration": 65,
     "listen_enabled": false,
+    "max_volume": 0.2,
+    "_comment_max_volume": "Se aconseja 0.2 para la mayoria de los usuarios.",
+    "min_volume": 0.0,
+    "rel_steps": 50,
     "pc_threads": 4,
-    "_comment_pc_threads": "CUIDADO: M\u00e1s hilos = mayor riesgo de baneo temporal por parte de YouTube (HTTP 429)."
+    "_comment_pc_threads_1": "[Solamente funciona para Playlist Check, incrementar su valor no mejora la experiencia]",
+    "_comment_pc_threads_2": "CUIDADO: Mas hilos = mayor riesgo de baneo temporal por parte de YouTube (HTTP 429)."
 }
