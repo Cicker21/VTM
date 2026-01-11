@@ -1,11 +1,12 @@
 *.m4a
+*.part
+
 *.bat
 *.pickle
 *.json
 
-!config.json
-!config_discord.json
-!.gitignore
+# Global config files
+!config*
 
 # Python cache
 __pycache__/
