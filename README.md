@@ -22,9 +22,7 @@ El núcleo del proyecto. Un reproductor de escritorio ultraligero capaz de manej
 ### 📋 To-Do Desktop
 - [ ] Optimizar el consumo de recursos.
 - [X] Verificar que no queda código muerto ni redundante.
-- [ ] Estabilidad en general, evitar que el bot muera silenciosamente.
-- [ ] Verificar que ayuda contempla todos los regex.
-- [ ] Verificar que no hay comandos que hayan muerto al recodificar funciones.
+- [ ] Crear un .exe para usuarios que no usen Python.
 
 ---
 
