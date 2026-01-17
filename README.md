@@ -21,7 +21,7 @@ El núcleo del proyecto. Un reproductor de escritorio ultraligero capaz de manej
 
 ### 📋 To-Do Desktop
 - [ ] Optimizar el consumo de recursos.
-- [ ] Verificar que no queda código muerto ni redundante.
+- [X] Verificar que no queda código muerto ni redundante.
 - [ ] Estabilidad en general, evitar que el bot muera silenciosamente.
 - [ ] Verificar que ayuda contempla todos los regex.
 - [ ] Verificar que no hay comandos que hayan muerto al recodificar funciones.
@@ -51,19 +51,45 @@ Detecta y elimina videos "Fantasmas" (Deleted/Private/Unlisted) que ensucian las
 
 ---
 
-## 🚀 Instalación y Uso (General)
+## 🚀 Instalación y Requisitos
 
-### Requisitos
-*   Python 3.10+
-#### Pip
-*   speech_recognition
-*   yt-dlp
-*   ffpyplayer
+### 💻 1. VTM Desktop
+Reproductor ultraligero con control por voz.
 
-### Comandos Comunes (Desktop)
-*   `p [canción]`: Reproducir.
-*   `s`: Siguiente.
-*   `import [url]`: Importar playlist.
-*   `pc`: Chequeo de integridad de playlists.
+**Requisitos del Sistema:**
+- **FFmpeg** (Instalar con: `winget install ffmpeg`)
 
+**Instalación de Dependencias:**
+```bash
+pip install speech_recognition yt-dlp PyAudio pydub
+```
 
+---
+
+### 🤖 2. VTM Discord
+Bot de música personal con radio inteligente.
+
+**Requisitos del Sistema:**
+- **FFmpeg** (Instalar con: `winget install ffmpeg`)
+
+**Instalación de Dependencias:**
+```bash
+pip install discord.py discord-ext-voice-recv yt-dlp pyttsx3 speech_recognition psutil
+```
+
+---
+
+### 🧹 3. VTM Purger
+Saneamiento de playlists mediante API oficial.
+
+**Instalación de Dependencias:**
+```bash
+pip install google-auth-oauthlib google-api-python-client google-auth
+```
+
+---
+
+## 📖 Uso rápido
+*   **Desktop**: Ejecuta `python Desktop/vtm.py`
+*   **Discord**: Ejecuta `python Discord/vtm_discord.py`
+*   **Purger**: Ejecuta `python Purger/playlist_purger.py`
