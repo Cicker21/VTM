@@ -16,9 +16,9 @@
     "hotword": "rafa",
     "filters_enabled": false,
     "tts_volume": 1.0,
-    "volume": 0.2,
+    "volume": 0.01,
     "microphone_index": 1,
-    "forced_keyword": "eurobeat",
+    "forced_keyword": null,
     "hotwords": [
         "rafa"
     ],
@@ -29,7 +29,7 @@
     ],
     "max_shorts_duration": 65,
     "listen_enabled": false,
-    "max_volume": 0.2,
+    "max_volume": 0.5,
     "_comment_max_volume": "Se aconseja 0.2 para la mayoria de los usuarios.",
     "min_volume": 0.0,
     "rel_steps": 50,

@@ -3,7 +3,7 @@
 vtm.py — Reproducir música de YouTube mediante comandos de voz o texto (ES)
 """
 
-VTM_VERSION = "0.10.8"
+VTM_VERSION = "0.11.0"
 UPDATE_URL = "https://raw.githubusercontent.com/Cicker21/VTM/refs/heads/main/Desktop/vtm.py"
 
 import argparse
@@ -22,9 +22,9 @@ import random
 import concurrent.futures
 
 from yt_dlp import YoutubeDL
-from ffpyplayer.player import MediaPlayer
-import urllib.request
 import urllib.error
+import pyaudio
+from pydub import AudioSegment
 
 # --- Configuraciones y Rutas ---
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -56,7 +56,8 @@ AYUDA_MSG = (
     "- ps / playlists     Ver todas tus listas importadas\n"
     "- import [url]       Importar lista de YouTube\n"
     "- pp [nombre]        Reproducir una de tus listas\n"
-    "- pr [nombre]        Eliminar una playlist\n"
+    "- pu [nombre]        Actualizar canciones (solo nuevas)\n"
+    "- pr [nombre]        Eliminar una playlist\n\n"
   
     "⭐️ FAVORITOS\n"
     "- fav / me gusta     Guardar actual en favoritos\n"
@@ -67,7 +68,6 @@ AYUDA_MSG = (
     "- favcheck           Verificar disponibilidad de favoritos\n\n"
     
     "⚙️ AJUSTES Y SISTEMA\n"
-    "- ensure [id]        Diagnóstico forzado de un ID\n"
     "- info / estado      ¿Qué está sonando?\n"
     "- radio [on/off]     Modo radio al vaciarse la cola\n"
     "- con/sin filtros    Activar/Quitar filtros de YouTube\n"
@@ -80,6 +80,7 @@ AYUDA_MSG = (
     "- pcr [query]        Playlist Check Recovered: Ver solo canciones recuperadas\n"
     "- pcd [query]        Playlist Check Deep: Verificar disponibilidad de canciones en modo agresivo\n"
     "- pcdr [query]       Playlist Check Deep Recovered: Ver solo canciones recuperadas en modo agresivo\n"
+    "- ensure [id]        Diagnóstico forzado de un ID\n"
 )
 
 # --- Logger de yt-dlp ---
@@ -286,7 +287,6 @@ def get_recommendations(video_id: str):
 def get_input_devices():
     indices = []
     try:
-        import pyaudio
         p = pyaudio.PyAudio()
         numdevices = p.get_host_api_info_by_index(0).get('deviceCount', 0)
         for i in range(numdevices):
@@ -310,7 +310,6 @@ def resolve_mic_index(preferred):
 def list_microphones():
     print("🎤 Micrófonos disponibles (Entradas):")
     try:
-        import pyaudio
         p = pyaudio.PyAudio()
         numdevices = p.get_host_api_info_by_index(0).get('deviceCount', 0)
         for i in range(numdevices):
@@ -324,7 +323,7 @@ def list_microphones():
 
 def cleanup_temp_files(prefix=TEMP_AUDIO_PREFIX):
     for f in os.listdir(_SCRIPT_DIR):
-        if f.startswith(prefix) and (f.endswith(".mp4") or f.endswith(".m4a")):
+        if f.startswith(prefix) and (f.endswith(".mp4") or f.endswith(".m4a") or f.endswith(".part") or f.endswith(".ytdl")):
             try: os.remove(os.path.join(_SCRIPT_DIR, f))
             except: pass
 
@@ -345,6 +344,7 @@ class CommandParser:
     RE_PLAYLIST_CHECK_RECOVERED = re.compile(r"^(pcr)(\s+(?P<q>.+))?$", re.I)
     RE_PLAYLIST_CHECK_DEEP = re.compile(r"^(pcd|deepcheck)(\s+(?P<q>.+))?$", re.I)
     RE_PLAYLIST_CHECK_DEEP_RECOVERED = re.compile(r"^(pcdr)(\s+(?P<q>.+))?$", re.I)
+    RE_PLAYLIST_UPDATE = re.compile(r"^(pu|playlist update|actualizar listas|actualizar playlists)(\s+(?P<q>.+))?$", re.I)
 
 
     
@@ -403,6 +403,9 @@ class CommandParser:
         m = self.RE_PLAYLIST_CHECK.match(t)
         if m: return "playlistcheck", m.groupdict()
         
+        m = self.RE_PLAYLIST_UPDATE.search(raw)
+        if m: return ("playlist_update", {"q": m.group("q")})
+
         m = self.RE_IMPORT.search(raw)
         if m: return ("import", {"url": m.group("url")})
         
@@ -504,11 +507,19 @@ def on_exit_hook():
 atexit.register(on_exit_hook)
 
 # -----------------------------------------------------------
-# Reproductor basado en FFPyPlayer
+# Reproductor basado en Pydub + PyAudio
 # -----------------------------------------------------------
 class AudioPlayer:
     def __init__(self, radio_enabled: bool = True):
-        self._player = None
+        # Audio Engine (pydub + pyaudio)
+        self._pa = pyaudio.PyAudio()
+        self._stream = None
+        self._audio_segment = None
+        self._playback_thread = None
+        self._playback_active = False
+        self._pts_ms = 0
+        self._session_id = 0
+        
         self._last_query = None
         self._last_index = 0
         self._paused = False
@@ -516,12 +527,14 @@ class AudioPlayer:
         self._current_id = None
         self._current_info = None
         self._current_filepath = None
+        self._current_duration = 0
         self.history = []
         self._previous_info = None
         self.radio_mode = radio_enabled 
         self._manually_stopped = True
         self.config = load_config()
         self._volume = self.config.get("volume", 0.02)
+        
         logging.info(f"🔊 Volumen inicial cargado: {int(self._volume * 1000)}%")
         self.forced_keyword = self.config.get("forced_keyword")
         
@@ -539,6 +552,16 @@ class AudioPlayer:
         # Radio exhaustion prevention
         self._radio_exhausted = False
         self._last_radio_attempt = 0
+
+    def _get_db_gain(self, vol_float):
+        """Map 0.0-1.0 float to dB gain for pydub. 
+           We assume 0.1 (default-ish) is a normal reference.
+        """
+        if vol_float <= 0: return -120 # Mute
+        # Using a reference where 0.1 is roughly 0dB or similar?
+        # Let's say 1.0 is 0dB (max volume without clipping)
+        import math
+        return 20 * math.log10(vol_float)
 
 
     def toggle_radio(self, enabled: bool):
@@ -561,6 +584,67 @@ class AudioPlayer:
         save_config(self.config)
         return self.forced_keyword
 
+    def _chunk_playback_loop(self, session_id):
+        chunk_ms = 50
+        pos_ms = 0
+        
+        # Copias locales de los objetos para evitar colisiones entre hilos
+        with self._lock:
+            seg = self._audio_segment
+            stream = self._stream
+            
+        while self._playback_active and self._session_id == session_id:
+            if self._paused:
+                time.sleep(0.1)
+                continue
+            
+            with self._lock:
+                if not seg or self._manually_stopped:
+                    break
+                
+                # Get next chunk
+                chunk = seg[pos_ms : pos_ms + chunk_ms]
+                if len(chunk) == 0:
+                    break # End of track
+                
+                # Apply volume
+                current_vol = self._volume
+                gain = self._get_db_gain(current_vol)
+                
+            # Fuera del lock para no bloquear otros hilos durante el procesado/escritura
+            chunk = chunk + gain
+            data = chunk.raw_data
+            
+            # Final check before write to minimize race with session change
+            if self._session_id != session_id or self._manually_stopped:
+                break
+
+            try:
+                if stream:
+                    # stream.write es bloqueante y dura lo que el buffer (~50ms)
+                    stream.write(data)
+            except Exception as e:
+                    # Si el error es -9983 (Stream is stopped), suele ser por una parada rápida/cambio de canción.
+                    # No es perjudicial, pero lo logueamos como INFO para no ensuciar como ERROR si es lo esperado.
+                logging.info(f"DEBUG: Stream write stopped (session {session_id}): {e}")
+                break
+            
+            with self._lock:
+                pos_ms += chunk_ms
+                self._pts_ms = pos_ms
+        
+        # Cleanup when loop ends
+        with self._lock:
+            # Solo limpiar si seguimos en la misma sesión que inició este hilo
+            if self._session_id == session_id:
+                self._playback_active = False
+                if self._stream:
+                    try:
+                        self._stream.stop_stream()
+                        self._stream.close()
+                    except: pass
+                    self._stream = None
+
     def _start_playback(self, info, filepath):
         """Inicia el reproductor y elimina el archivo anterior."""
         with self._lock:
@@ -573,61 +657,47 @@ class AudioPlayer:
                     os.remove(old_path)
                 except: pass
             
-            # Delay para evitar colisión de hilos de SDL/ffpyplayer entre tracks
-            time.sleep(0.5)
-
             try:
-                # NUCLEAR OPTION: Aplicamos el volumen directamente en el decodificador (FFmpeg)
-                # volume={self._volume}: El audio ya sale 'capado' de origen. Imposible que pegue picos.
-                af_filter = f'volume={self._volume},afade=t=in:ss=0:d=0.5'
-                ff_opts = {'vn': True, 'af': af_filter}
+                # Load Audio
+                logging.info(f"⏳ Cargando audio: {info['title']}...")
+                seg = AudioSegment.from_file(filepath)
+                # Normalize to standard format for easier output
+                seg = seg.set_frame_rate(44100).set_channels(2).set_sample_width(2)
+                self._audio_segment = seg
                 
-                logging.info(f"DEBUG: MediaPlayer init (paused=True, filter-vol={self._volume}) with: {filepath}")
-                new_player = MediaPlayer(filepath, paused=True, ff_opts=ff_opts)
-                if not new_player:
-                    logging.error("DEBUG: MediaPlayer returned None!")
-                    return None
-                self._player = new_player
+                # Setup Stream
+                self._stream = self._pa.open(
+                    format=self._pa.get_format_from_width(seg.sample_width),
+                    channels=seg.channels,
+                    rate=seg.frame_rate,
+                    output=True
+                )
+                
+                self._session_id += 1
+                session_id = self._session_id
+                self._playback_active = True
+                self._pts_ms = 0
+                self._playback_thread = threading.Thread(target=self._chunk_playback_loop, args=(session_id,), daemon=True)
+                self._playback_thread.start()
 
-                # Hilo de arranque seguro: Esperar a que se asiente -> Re-confirmar Vol -> Unpause
-                def force_volume_and_play():
-                    time.sleep(0.4) # Seguridad anti-crash
-                    with self._lock:
-                        if self._player:
-                            try:
-                                self._player.set_volume(self._volume)
-                                time.sleep(0.05) # Pequeño buffer
-                                self._player.set_pause(False) # AHORA soltamos el audio
-                                logging.info("DEBUG: Audio released (Safety sequence done).")
-                            except Exception as ep:
-                                logging.error(f"DEBUG: Error in delayed play: {ep}")
-                
-                threading.Thread(target=force_volume_and_play, daemon=True).start()
-                
                 self._previous_info = self._current_info
                 self._current_filepath = filepath
                 self._paused = False
                 self._current_title = info["title"]
                 self._current_id = info["id"]
                 self._current_info = info
-                self._current_duration = info.get("duration", 0)
+                self._current_duration = len(seg) / 1000.0
                 
                 self.history.append(info["title"])
                 if len(self.history) > 15:
-                    self.history.pop(0) # Borra la más vieja
+                    self.history.pop(0)
                 
                 self._manually_stopped = False
-                time.sleep(0.4)
                 logging.info(f"▶️ Reproduciendo: {info['title']}")
                 
                 self._preloaded_data = None
                 self._preloading = False
                 
-                # Si no es un favorito manual, paramos el modo playlist
-                if not info.get("_is_fav_playlist", False):
-                    self.fav_playlist_mode = False
-                
-                # Si no es de la playlist importada, paramos el modo
                 if not info.get("_is_plist", False):
                     self.plist_mode = False
                 
@@ -641,8 +711,7 @@ class AudioPlayer:
 
     def play_query(self, query: str, index: int = 0):
         # logging.info(f"DEBUG: play_query called with query='{query}', index={index}")
-        self.fav_playlist_mode = False # Reset playlist
-        self.plist_mode = False
+        self.plist_mode = False # Reset playlist
         self._last_query = query
         self._last_index = index
 
@@ -699,30 +768,29 @@ class AudioPlayer:
     def update(self):
         try:
             with self._lock:
-                if self._paused or self._manually_stopped or not self._player: return
+                if self._paused or self._manually_stopped: return
                 
-                try:
-                    pts = self._player.get_pts() or 0
-                    meta = self._player.get_metadata()
-                    duration = meta.get('duration', self._current_duration or 0)
-                except:
-                    pts, duration = 0, self._current_duration or 0
+                pts = self._pts_ms / 1000.0
+                duration = self._current_duration or 0
                 
-                if duration > 0:
+                # Track finished detection
+                finished = (pts >= duration - 0.1) and (not self._playback_active or pts > 0)
+                
+                if duration > 0 and not finished:
                     rem = duration - pts
                     if not self._preloaded_data and not self._preloading and (pts > duration * 0.8 or rem < 20):
                         self._preloading = True
                         threading.Thread(target=self._background_preload, daemon=True).start()
 
-                    if pts >= duration - 0.8:
-                        if self._preloaded_data:
-                            info, fpath = self._preloaded_data
-                            self._preloaded_data = None
-                            self._radio_exhausted = False
-                            self._start_playback(info, fpath)
-                        elif time.time() - getattr(self, '_last_next_call', 0) > 2:
-                            self._last_next_call = time.time()
-                            self.next_result()
+                if finished:
+                    if self._preloaded_data:
+                        info, fpath = self._preloaded_data
+                        self._preloaded_data = None
+                        self._radio_exhausted = False
+                        self._start_playback(info, fpath)
+                    elif time.time() - getattr(self, '_last_next_call', 0) > 2:
+                        self._last_next_call = time.time()
+                        self.next_result()
         except Exception as e:
             logging.error(f"Error update: {e}")
 
@@ -732,32 +800,36 @@ class AudioPlayer:
             logging.info("⏳ Iniciando precarga JIT...")
             
             # 1. Prioridad: Siguiente en la cola (sin descargar)
+            target_info = None
             with self._lock:
                 if self.queue:
                     for i, item in enumerate(self.queue):
                         info, fpath = item
                         if not fpath:
-                            logging.info(f"⏳ Precargando siguiente canción de la cola: {info['title']}")
-                            new_fpath = download_media(info.get("page_url") or info.get("url"), prefix=TEMP_AUDIO_PREFIX)
-                            if new_fpath:
-                                with self._lock:
-                                    # Actualizar en la cola
-                                    self.queue[i] = (info, new_fpath)
-                                    if i == 0:
-                                        self._preloaded_data = (info, new_fpath)
-                                logging.info(f"✅ Precarga de cola lista: {info['title']}")
-                                return
-                            break # Si falla una, paramos o re-intentamos
-                    
-                    # Si ya están todas las de la cola descargadas, precargamos el primer item en _preloaded_data si no está ya
-                    if not self._preloaded_data and self.queue[0][1]:
-                        self._preloaded_data = self.queue[0]
-                        return
+                            target_info = info
+                            target_index = i
+                            break
+            
+            if target_info:
+                logging.info(f"⏳ Precargando siguiente canción de la cola: {target_info['title']}")
+                # Descarga FUERA del lock
+                new_fpath = download_media(target_info.get("page_url") or target_info.get("url"), prefix=TEMP_AUDIO_PREFIX)
+                if new_fpath:
+                    with self._lock:
+                        # Re-verificar que el item sigue en la misma posición (o existe)
+                        if len(self.queue) > target_index and self.queue[target_index][0]["id"] == target_info["id"]:
+                            self.queue[target_index] = (target_info, new_fpath)
+                            if target_index == 0:
+                                self._preloaded_data = (target_info, new_fpath)
+                    logging.info(f"✅ Precarga de cola lista: {target_info['title']}")
+                    return
 
             # 2. Si no hay cola o todo está listo, radio/recs
+            # _get_next_candidate_data ya tiene gestión interna de locks optimizada
             res = self._get_next_candidate_data()
             if res: 
-                self._preloaded_data = res
+                with self._lock:
+                    self._preloaded_data = res
                 logging.info(f"📦 Canción precargada (Radio): {res[0]['title']}")
             else:
                 logging.info("DEBUG: Precarga finalizó sin candidato.")
@@ -784,21 +856,29 @@ class AudioPlayer:
         logging.info("🔍 Obteniendo siguiente candidato...")
         
         # 1. Prioridad: COLA
-        with self._lock:
-            # Bucle para saltar canciones fallidas
-            while self.queue:
-                info, fpath = self.queue.pop(0)
-                if not fpath:
-                    logging.info(f"⏳ Descargando JIT para el siguiente en cola: {info['title']}")
-                    # Si no tiene URL, hay que buscarla primero
-                    if not info.get("url") and not info.get("page_url"):
-                        full_info = get_search_info(info["id"])
-                        if full_info: info.update(full_info)
-                    
-                    fpath = download_media(info.get("page_url") or info.get("url"), prefix=TEMP_AUDIO_PREFIX)
+        while True:
+            target_info = None
+            target_fpath = None
+            with self._lock:
+                if not self.queue:
+                    break
+                target_info, target_fpath = self.queue.pop(0)
+            
+            if target_fpath:
+                return (target_info, target_fpath)
                 
-                if fpath: return (info, fpath)
-                logging.warning(f"⚠️ No se pudo reproducir '{info.get('title')}' de la cola. Saltando al siguiente...")
+            # Descarga JIT FUERA del lock
+            logging.info(f"⏳ Descargando JIT para el siguiente en cola: {target_info['title']}")
+            if not target_info.get("url") and not target_info.get("page_url"):
+                # Búsqueda FUERA del lock
+                full_info = get_search_info(target_info["id"])
+                if full_info: target_info.update(full_info)
+            
+            fpath = download_media(target_info.get("page_url") or target_info.get("url"), prefix=TEMP_AUDIO_PREFIX)
+            if fpath:
+                return (target_info, fpath)
+            
+            logging.warning(f"⚠️ No se pudo reproducir '{target_info.get('title')}' de la cola. Saltando al siguiente...")
         
         # 2. Modo Playlist
         if self.plist_mode:
@@ -885,11 +965,9 @@ class AudioPlayer:
 
 
     def pause(self):
-        if self._player: self._player.set_pause(True)
         self._paused = True
 
     def resume(self):
-        if self._player: self._player.set_pause(False)
         self._paused = False
 
     def _fmt_title(self, info):
@@ -914,9 +992,9 @@ class AudioPlayer:
             m_status = "ON" if self.config.get("listen_enabled", True) else "OFF"
             
             pos_str = "0:00/0:00"
-            if self._player:
-                pts = self._player.get_pts() or 0
-                dur = self._player.get_metadata().get('duration', self._current_duration or 0)
+            if self._playback_active:
+                pts = self._pts_ms / 1000.0
+                dur = self._current_duration or 0
                 def fmt_sec(s): return f"{int(s//60)}:{int(s%60):02d}"
                 pos_str = f"   ⏳ {fmt_sec(pts)}/{fmt_sec(dur)}"
     
@@ -938,14 +1016,13 @@ class AudioPlayer:
                     f"| 🎤 Micro: {m_status} [{self.config.get('microphone_index', '0')}]")
 
     def stop_locked(self):
+        self._session_id += 1 # Invalidar hilos anteriores
         self._manually_stopped = True
-        if self._player:
-            logging.info("DEBUG: Deteniendo reproductor anterior...")
-            try:
-                self._player.close_player()
-            except Exception as e:
-                logging.debug(f"Error close_player: {e}")
-            self._player = None
+        self._playback_active = False
+        if self._stream:
+            try: self._stream.stop_stream()
+            except: pass
+        self._audio_segment = None
 
     def stop(self):
         with self._lock:
@@ -959,7 +1036,6 @@ class AudioPlayer:
             self._volume = v
             self.config["volume"] = v
             save_config(self.config)
-            if self._player: self._player.set_volume(v)
             # Mostramos el porcentaje real sobre 1000 para consistencia visual con el comando
             logging.info(f"🔊 Volumen: {int(v*1000)}% (Límite: {int(min_v*1000)}-{int(max_v*1000)}%)")
 
@@ -1397,9 +1473,60 @@ class AudioPlayer:
                 save_playlists(all_playlists)
                 return f"He borrado {total_deleted} canciones de tus playlists."
             else:
-                return "Operaci\u00f3n cancelada. No se han realizado cambios en la composici\u00f3n de las listas."
+                return "Operación cancelada. No se han realizado cambios en la composición de las listas."
         
-        return "Todas las canciones verificadas est\u00e1n disponibles."
+        return "Todas las canciones verificadas están disponibles."
+
+    def update_playlists(self, query=None):
+        all_p = load_playlists()
+        if not all_p: return "No hay playlists para actualizar."
+        
+        target_p = {}
+        if query:
+            pid, data = self._find_playlist(query)
+            if pid: target_p = {pid: data}
+            else: return f"⚠️ No se encontró la playlist '{query}'"
+        else:
+            target_p = {pid: data for pid, data in all_p.items() if len(pid) > 5 and not pid.startswith("migrated")}
+
+        if not target_p: return "No hay playlists de YouTube (con ID válido) para actualizar."
+
+        results = []
+        ydl_opts = _get_ytdl_opts(quiet=True)
+        ydl_opts["extract_flat"] = True
+
+        for pid, pdata in target_p.items():
+            title = pdata.get("title", pid)
+            logging.info(f"⏳ Sincronizando playlist: {title} ({pid})...")
+            try:
+                with YoutubeDL(ydl_opts) as ydl:
+                    res = ydl.extract_info(f"https://www.youtube.com/playlist?list={pid}", download=False)
+                    if not res or "entries" not in res:
+                        results.append(f"❌ {title}: No se pudo obtener info.")
+                        continue
+                    
+                    entries = [e for e in res["entries"] if e]
+                    current_songs = pdata.get("songs", [])
+                    current_ids = {s["id"] for s in current_songs}
+                    
+                    added = 0
+                    for e in entries:
+                        eid = e.get("id")
+                        if eid and eid not in current_ids:
+                            current_songs.append({"id": eid, "title": e.get("title", "Sin título")})
+                            current_ids.add(eid)
+                            added += 1
+                    
+                    if added > 0:
+                        all_p[pid]["songs"] = current_songs
+                        results.append(f"✅ {title}: +{added} canciones.")
+                    else:
+                        results.append(f"ℹ️ {title}: Al día.")
+            except Exception as e:
+                results.append(f"❌ {title}: Error ({e})")
+        
+        save_playlists(all_p)
+        return "\n".join(results)
 
 
     def ensure_id(self, s_id):
@@ -1498,7 +1625,7 @@ class AudioPlayer:
             elif cmd == "pause": self.pause()
             elif cmd == "resume": self.resume()
             else:
-                if self._player and not self._paused: self.pause()
+                if self._playback_active and not self._paused: self.pause()
                 else: self.resume()
 
         elif cmd == "next": self.next_result()
@@ -1602,6 +1729,9 @@ class AudioPlayer:
                     self.plist_mode, self.plist_id, self.plist_title = True, target_id, pdata.get("title")
                     with self._lock: self.queue.clear()
                     self._start_playlist_jit(pdata.get("songs", []))
+
+        elif cmd == "playlist_update":
+            logging.info(f"🔄 {self.update_playlists(args.get('q'))}")
 
         elif cmd in ["radio", "filtros"]: getattr(self, f"toggle_{cmd}")(args["enabled"])
         elif cmd == "force":
@@ -1799,7 +1929,7 @@ def main():
         player.config["listen_enabled"] = (args.micro_init == "on")
         # No guardamos al config.json aquí para que el CLI sea temporal
     
-    # Hotwords now return a list from vtm_core
+    # Hotwords
     hotwords = player.config.get("hotwords", ["rafa"])
 
     # --- Background Update Thread ---
