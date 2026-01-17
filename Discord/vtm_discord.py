@@ -26,6 +26,7 @@ import re
 from yt_dlp import YoutubeDL
 import tempfile
 import pyttsx3
+import psutil
 
 # --- Logger de yt-dlp ---
 class YtdlLogger:
@@ -302,7 +303,6 @@ _LOC_DIR = os.path.dirname(os.path.abspath(__file__))
 LOCK_FILE = os.path.join(_LOC_DIR, "vtm_discord.lock")
 
 def check_single_instance():
-    import psutil
     pid = os.getpid()
     
     if os.path.exists(LOCK_FILE):
