@@ -1,0 +1,16 @@
+{
+  "name": "vtm",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "pretauri": "node -e \"require('fs').writeFileSync('src-tauri/.build-ts', String(Date.now()))\"",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  },
+  "dependencies": {
+    "@tauri-apps/plugin-shell": "^2.3.5"
+  }
+}

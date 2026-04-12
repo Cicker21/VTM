@@ -1,0 +1,17 @@
+    Checking vtm v0.1.0 (W:\Documentos\Antigravity\VTM\Rust\vtm\src-tauri)
+warning: unused import: `std::str::FromStr`
+  --> src\lib.rs:16:5
+   |
+16 | use std::str::FromStr;
+   |     ^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `GlobalShortcutExt`
+  --> src\lib.rs:15:61
+   |
+15 | use tauri_plugin_global_shortcut::{Shortcut, ShortcutState, GlobalShortcutExt};
+   |                                                             ^^^^^^^^^^^^^^^^^
+
+warning: `vtm` (lib) generated 2 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.05s

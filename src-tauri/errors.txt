@@ -1,0 +1,71 @@
+    Checking vtm v0.1.0 (W:\Documentos\Antigravity\VTM\Rust\vtm\src-tauri)
+error[E0433]: failed to resolve: could not find `ClickType` in `tray`
+   --> src\lib.rs:236:61
+    |
+236 |                         if event.click_type == tauri::tray::ClickType::Left {
+    |                                                             ^^^^^^^^^ could not find `ClickType` in `tray`
+
+warning: unused imports: `MouseButtonState` and `MouseButton`
+   --> src\lib.rs:212:52
+    |
+212 |                 use tauri::tray::{TrayIconBuilder, MouseButton, MouseButtonState};
+    |                                                    ^^^^^^^^^^^  ^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0599]: no method named `get_webview_window` found for reference `&AppHandle<_>` in the current scope
+   --> src\lib.rs:227:59
+    |
+227 | ...                   if let Some(window) = app.get_webview_window("main") {
+    |                                                 ^^^^^^^^^^^^^^^^^^
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: there is a method `webview_windows` with a similar name, but with different arguments
+   --> C:\Users\todom\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tauri-2.10.3\src\lib.rs:594:3
+    |
+594 |   fn webview_windows(&self) -> HashMap<String, WebviewWindow<R>> {
+    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: trait `Manager` which provides `get_webview_window` is implemented but not in scope; perhaps you want to import it
+    |
+  1 + use tauri::Manager;
+    |
+
+error[E0282]: type annotations needed
+   --> src\lib.rs:228:45
+    |
+228 | ...                   let _ = window.show();
+    |                               ^^^^^^ cannot infer type
+
+error[E0609]: no field `click_type` on type `tauri::tray::TrayIconEvent`
+   --> src\lib.rs:236:34
+    |
+236 |                         if event.click_type == tauri::tray::ClickType::Left {
+    |                                  ^^^^^^^^^^ unknown field
+
+error[E0599]: no method named `get_webview_window` found for reference `&AppHandle<_>` in the current scope
+   --> src\lib.rs:238:55
+    |
+238 | ...                   if let Some(window) = app.get_webview_window("main") {
+    |                                                 ^^^^^^^^^^^^^^^^^^
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: there is a method `webview_windows` with a similar name, but with different arguments
+   --> C:\Users\todom\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tauri-2.10.3\src\lib.rs:594:3
+    |
+594 |   fn webview_windows(&self) -> HashMap<String, WebviewWindow<R>> {
+    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: trait `Manager` which provides `get_webview_window` is implemented but not in scope; perhaps you want to import it
+    |
+  1 + use tauri::Manager;
+    |
+
+error[E0282]: type annotations needed
+   --> src\lib.rs:239:41
+    |
+239 | ...                   let _ = window.show();
+    |                               ^^^^^^ cannot infer type
+
+Some errors have detailed explanations: E0282, E0433, E0599, E0609.
+For more information about an error, try `rustc --explain E0282`.
+warning: `vtm` (lib) generated 1 warning
+error: could not compile `vtm` (lib) due to 6 previous errors; 1 warning emitted

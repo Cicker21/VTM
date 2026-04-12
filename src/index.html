@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VTM Music Player</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Custom Titlebar -->
+  <div class="titlebar" data-tauri-drag-region>
+    <img src="vtm_logo.png" alt="VTM" class="titlebar-logo-img">
+    <div class="title-nav">
+      <button id="showSettingsBtn" class="btn-win-nav">Ajustes</button>
+      <button id="showCustomBtn" class="btn-win-nav">Personalización</button>
+      <button id="showBindsBtn" class="btn-win-nav">Bindeos</button>
+    </div>
+    <div class="window-controls">
+      <button class="win-btn" id="winMinimize" title="Minimizar">
+        <svg viewBox="0 0 24 24"><path d="M19 13H5v-2h14v2z" fill="currentColor"/></svg>
+      </button>
+      <button class="win-btn" id="winMaximize" title="Maximizar">
+        <svg viewBox="0 0 24 24"><path d="M4 4h16v16H4V4zm2 4v10h12V8H6z" fill="currentColor"/></svg>
+      </button>
+      <button class="win-btn win-close" id="winClose" title="Cerrar">
+        <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12 19 6.41z" fill="currentColor"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- Header -->
+  <header class="header">
+      <div class="logo">
+        <img src="vtm_logo.png" alt="VTM" class="logo-img" id="headerLogo" style="cursor:pointer" title="Ir al inicio" />
+      </div>
+
+    <div class="search-container">
+      <div class="search-box" id="searchBox">
+        <svg class="search-icon" viewBox="0 0 24 24" fill="none">
+          <circle cx="11" cy="11" r="8" stroke="currentColor" stroke-width="2"/>
+          <path d="m21 21-4.35-4.35" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        <input
+          type="text"
+          id="searchInput"
+          placeholder="Buscar en YouTube..."
+          autocomplete="off"
+        />
+        <button id="searchBtn" class="search-submit" title="Buscar">
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M5 12h14M12 5l7 7-7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+      <div class="search-suggestions" id="searchSuggestions" style="display:none"></div>
+    </div>
+
+    <div class="header-actions">
+      <div id="ytdlpStatus" class="status-badge status-checking">
+        <span class="status-dot"></span>
+        <span class="status-text">Verificando...</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Layout -->
+  <main class="main-layout">
+    <!-- Playlist Sidebar (Left) -->
+    <aside class="sidebar sidebar-left open" id="playlistSidebar">
+      <div class="sidebar-header">
+        <h3>Playlists</h3>
+        <button id="importPlaylistBtn" class="btn-icon" title="Importar YouTube Playlist">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      
+      <div class="playlist-import" id="playlistImportArea" style="display:none">
+        <input type="url" id="playlistUrlInput" placeholder="Pega la URL de la playlist..." inputmode="url" spellcheck="false" autocomplete="off" dir="ltr" />
+        <button id="confirmImportBtn">Importar</button>
+      </div>
+
+      <div class="sidebar-content">
+        <div class="playlist-item active" data-type="local" id="localPlaylist">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" fill="currentColor"/></svg>
+          <span class="playlist-name">Favoritos Locales</span>
+        </div>
+        <div class="playlist-item" id="historyPlaylist">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="playlist-name">Historial</span>
+        </div>
+        <div id="importedPlaylistsList">
+          <!-- Dynamic playlists -->
+        </div>
+        <div class="sidebar-divider"></div>
+        <div class="sidebar-header">
+          <h3>Mis Playlists (YT)</h3>
+          <div style="display:flex; gap: 4px;">
+            <button id="sidebarUserBtn" class="btn-icon" title="Cerrar Sesión (YouTube)" style="display:none; color: var(--accent-light);">
+              <svg viewBox="0 0 24 24" fill="none"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" fill="currentColor"/></svg>
+            </button>
+            <button id="refreshMyPlaylistsBtn" class="btn-icon" title="Refrescar">
+              <svg viewBox="0 0 24 24" fill="none"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+          </div>
+        </div>
+        <div id="myPlaylistsList">
+          <div class="sidebar-auth-hint">
+            <p class="sidebar-hint">Conecta tu cuenta para ver tus playlists de YouTube aquí.</p>
+            <button id="sidebarLoginYtBtn" class="btn-google btn-sm">
+              <svg viewBox="0 0 24 24" width="16" height="16"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.66l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
+              <span>Acceder</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Results / Home -->
+    <section class="content-area" id="contentArea">
+      <div class="content-bg-logo"></div>
+      <!-- Welcome Screen -->
+      <div class="welcome-screen" id="welcomeScreen">
+        <div class="welcome-logo-container">
+          <img src="vtm_logo.png" alt="VTM" class="welcome-logo" />
+        </div>
+        <h1>Bienvenido a VTM</h1>
+        <p>Busca tu música favorita de YouTube y disfrútala sin anuncios</p>
+        <div class="welcome-suggestions">
+          <span class="suggestion-tag" data-query="lofi hip hop">🎵 Lofi Hip Hop</span>
+          <span class="suggestion-tag" data-query="chill electronic">⚡ Chill Electronic</span>
+          <span class="suggestion-tag" data-query="jazz cafe">🎷 Jazz Café</span>
+          <span class="suggestion-tag" data-query="phonk music">🔥 Phonk</span>
+          <span class="suggestion-tag" data-query="classical piano">🎹 Piano Clásico</span>
+        </div>
+      </div>
+
+      <!-- Loading State -->
+      <div class="loading-screen" id="loadingScreen" style="display:none">
+        <div class="loading-spinner"></div>
+        <p>Buscando <span id="loadingQuery"></span>...</p>
+      </div>
+
+      <!-- Results Grid -->
+      <div class="results-grid" id="resultsGrid" style="display:none">
+        <div class="results-header">
+          <div class="results-meta">
+            <h2 id="resultsTitle">Resultados</h2>
+            <span id="resultsCount" class="results-count"></span>
+          </div>
+          <div id="resultsActions" class="results-actions"></div>
+        </div>
+        <div class="cards-grid" id="cardsGrid"></div>
+      </div>
+
+      <!-- Error -->
+      <div class="error-screen" id="errorScreen" style="display:none">
+        <div class="error-icon">⚠️</div>
+        <h2>Error al buscar</h2>
+        <p id="errorMessage"></p>
+        <button class="btn-retry" id="retryBtn">Reintentar</button>
+      </div>
+
+      <!-- Settings Screen -->
+      <div class="settings-screen" id="settingsScreen" style="display:none">
+        <h2>Ajustes</h2>
+        <div class="settings-grid">
+          <div class="settings-item">
+            <label>Conservar estado de los elementos</label>
+            <input type="checkbox" id="settingPersistState" />
+          </div>
+          <div class="settings-item">
+            <label>Cerrar al segundo plano</label>
+            <input type="checkbox" id="settingCloseToTray" />
+          </div>
+          <div class="settings-item">
+            <label>Mostrar versión de compilación</label>
+            <input type="checkbox" id="settingShowVersion" />
+          </div>
+
+          <div class="settings-item">
+            <label>Dispositivo de Salida</label>
+            <select id="settingOutputDevice"></select>
+          </div>
+          <div class="settings-item">
+            <label>Dispositivo de Entrada</label>
+            <select id="settingInputDevice"></select>
+          </div>
+          <div class="settings-item blacklist-item">
+            <label>Palabras prohibidas (blacklist)</label>
+            <p class="settings-hint">Filtra términos completos (ej: "live" no baneará "chabelivevo").</p>
+            <textarea id="settingBlacklistWords" placeholder="palabra1, palabra2..." rows="1"></textarea>
+          </div>
+          <div class="settings-item blacklist-item">
+            <label>Caracteres prohibidos (blacklist)</label>
+            <p class="settings-hint">Filtra cualquier coincidencia parcial (ej: "live" baneará "chabelivevo").</p>
+            <textarea id="settingBlacklistChars" placeholder="caracteres1, abc..." rows="1"></textarea>
+          </div>
+          <div class="settings-item">
+            <label>Duración máxima (segundos)</label>
+            <div class="range-group">
+              <input type="number" id="settingMaxDuration" />
+              <input type="checkbox" id="settingMaxDurationEnabled" />
+            </div>
+          </div>
+          <div class="settings-item">
+            <label>Límites de Volumen (Min/Max)</label>
+            <div class="range-group">
+              <input type="number" id="settingVolMin" step="0.1" placeholder="Min" />
+              <input type="number" id="settingVolMax" step="0.1" placeholder="Max" />
+            </div>
+          </div>
+          <div class="settings-item threads-item">
+            <label>Hilos de recuperación (1-10): <span id="valRepairThreads" class="slider-val">4</span></label>
+            <input type="range" id="settingRepairThreads" min="1" max="10" step="1" />
+            <p class="warning-text">⚠️ Valores altos pueden causar suspensiones temporales de IP por parte de Google.</p>
+          </div>
+          <div class="settings-item">
+            <label>Retardo búsqueda AUTO (segundos): <span id="valAutoSearchDelay" class="slider-val">1.5</span></label>
+            <input type="range" id="settingAutoSearchDelay" min="0.25" max="5.0" step="0.25" />
+          </div>
+          <div class="settings-item">
+            <label>Objetivo cola AUTO: <span id="valAutoMixSize" class="slider-val">10</span></label>
+            <input type="range" id="settingAutoMixSize" min="1" max="100" step="1" value="10" />
+          </div>
+        </div>
+
+        <!-- YouTube Auth Section -->
+        <div class="settings-group-title">YouTube OAuth2</div>
+        <div class="settings-auth-card">
+          <div id="ytAuthStatus">
+            <p class="auth-hint">Conecta tu cuenta para gestionar tus playlists de YouTube directamente desde VTM.</p>
+            <button id="loginYtBtn" class="btn-google">
+              <svg viewBox="0 0 24 24" width="20" height="20"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.66l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
+              <span>Acceder con Google</span>
+            </button>
+          </div>
+          <div id="ytUserInfo" style="display:none">
+            <div class="user-logged-in">
+              <span id="ytUserName">Cargando perfil...</span>
+              <button id="logoutYtBtn" class="btn-text">Cerrar sesión</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-actions">
+          <button id="saveSettingsBtn" class="btn-primary">Guardar Ajustes</button>
+        </div>
+      </div>
+
+      <!-- Customization Screen -->
+      <div class="customization-screen" id="customizationScreen" style="display:none">
+        <h2>Personalización</h2>
+        <div class="theme-grid">
+          <div class="theme-section">
+            <h3>Colores Principales</h3>
+            <div class="color-item">
+              <span>Acento Principal</span>
+              <input type="color" id="colorAccent" value="#7c3aed" />
+            </div>
+            <div class="color-item">
+              <span>Acento Secundario</span>
+              <input type="color" id="colorAccentLight" value="#9f67ff" />
+            </div>
+            <div class="color-item">
+              <span>Fondo Principal</span>
+              <input type="color" id="colorBg" value="#0a0a0f" />
+            </div>
+          </div>
+          <div class="theme-section">
+            <h3>Superficies</h3>
+            <div class="color-item">
+              <span>Superficie Tarjetas</span>
+              <input type="color" id="colorSurface" value="#16161f" />
+            </div>
+            <div class="color-item">
+              <span>Bordes / Líneas</span>
+              <input type="color" id="colorBorder" value="#2d2d3d" />
+            </div>
+            <div class="color-item">
+              <span>Texto Principal</span>
+              <input type="color" id="colorTextPrimary" value="#f0f0f8" />
+            </div>
+            <div class="color-item">
+              <span>Texto Secundario</span>
+              <input type="color" id="colorTextSecondary" value="#9090b8" />
+            </div>
+          </div>
+        </div>
+        <div class="settings-actions">
+          <button id="saveThemeBtn" class="btn-primary">Aplicar Tema</button>
+          <button id="resetThemeBtn" class="btn-secondary">Restablecer</button>
+        </div>
+      </div>
+
+      <!-- Bindeos Screen -->
+      <div class="settings-screen binds-screen" id="bindsScreen" style="display:none">
+        <h2>Bindeos</h2>
+        <p class="settings-hint binds-hint">Añade atajos de teclado o multimedia y asígnales una acción.</p>
+
+        <div class="binds-toolbar">
+          <button id="addKeybindBtn" class="btn-primary">+ añadir bindeo</button>
+        </div>
+
+        <div id="keybindsList" class="keybinds-list"></div>
+      </div>
+    </section>
+
+    <div id="keybindCaptureModal" class="modal-overlay" style="display:none">
+      <div class="modal-content keybind-modal">
+        <div class="modal-header">
+          <h3 id="keybindModalTitle">Añadir bindeo</h3>
+          <button class="btn-close-modal" id="closeKeybindModal" aria-label="Cerrar">×</button>
+        </div>
+        <div class="modal-body keybind-modal-body">
+          <div class="keybind-capture-box">
+            <p class="keybind-capture-label">Pulsa una tecla, combinación o entrada multimedia</p>
+            <div id="capturedShortcutText" class="captured-shortcut">Esperando captura...</div>
+            <button id="clearCapturedShortcutBtn" class="btn-secondary">Limpiar captura</button>
+          </div>
+
+          <div class="settings-item keybind-action-item">
+            <label>Acción</label>
+            <select id="keybindActionSelect"></select>
+          </div>
+
+          <div class="settings-item keybind-count-item">
+            <label>Pulsaciones</label>
+            <select id="keybindPressCountSelect">
+              <option value="1">1x</option>
+              <option value="2">2x</option>
+            </select>
+          </div>
+        </div>
+        <div class="settings-actions keybind-modal-actions">
+          <button id="cancelKeybindBtn" class="btn-secondary">Cancelar</button>
+          <button id="confirmKeybindBtn" class="btn-primary">Confirmar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Queue Sidebar (Right) -->
+    <aside class="sidebar sidebar-right open" id="queueSidebar">
+      <div class="sidebar-header">
+        <div class="header-with-count">
+          <div id="modeIndicator" class="mode-indicator" title="Modo de búsqueda">
+            <svg class="mode-icon-yt" viewBox="0 0 24 24" fill="currentColor"><path d="M19.65 8.54c-1.18-1.54-3.5-1.54-3.5-1.54H7.85s-2.32 0-3.5 1.54c-1.18 1.54-1.18 4.46-1.18 4.46s0 2.92 1.18 4.46c1.18 1.54 3.5 1.54 3.5 1.54h8.3s2.32 0 3.5-1.54c1.18-1.54 1.18-4.46 1.18-4.46s0-2.92-1.18-4.46zM10 14.5v-5l4.5 2.5-4.5 2.5z"/></svg>
+            <svg class="mode-icon-ytm" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 14.5c-2.49 0-4.5-2.01-4.5-4.5S9.51 7.5 12 7.5s4.5 2.01 4.5 4.5-2.01 4.5-4.5 4.5zm0-5.5c-.55 0-1 .45-1 1s.45 1 1 1 1-.45 1-1-.45-1-1-1z"/></svg>
+          </div>
+          <h3>Cola</h3>
+          <span class="queue-count" id="queueCount">0</span>
+        </div>
+        <div class="queue-actions">
+          <button id="clearQueueBtn" class="btn-icon" title="Limpiar cola">
+            <svg viewBox="0 0 24 24" fill="none">
+              <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div class="queue-filter">
+        <div class="filter-input-wrapper">
+          <input type="text" id="autoThemeInput" placeholder="Tema AUTO (ej: rumba, shakira...)" />
+          <div id="searchReference" class="search-reference"></div>
+        </div>
+      </div>
+      <div class="sidebar-controls">
+        <button class="btn-control btn-control-auto" id="sidebarAutoBtn" title="Auto-Queue (Añadir canciones automáticamente)">
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M13 10V3L4 14h7v7l9-11h-7z" fill="currentColor"/>
+          </svg>
+          <span>AUTO</span>
+        </button>
+        <button class="btn-control" id="sidebarShuffleBtn" title="Aleatorio">
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M2 18h1.4c1.2 0 2.3-.5 3.1-1.4L10 13M2 6h1.4c1.2 0 2.3.5 3.1 1.4l9 9.2c.8.9 1.9 1.4 3.1 1.4H20M14 6h6m0 0-3-3m3 3-3 3M20 18h-6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+        <button class="btn-control" id="sidebarRepeatBtn" title="Repetir">
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M17 1l4 4-4 4M3 11V9a4 4 0 0 1 4-4h14M7 23l-4-4 4-4M21 13v2a4 4 0 0 1-4 4H3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span class="repeat-one-badge" style="display:none">1</span>
+        </button>
+      </div>
+      <div class="queue-list" id="queueList">
+        <div class="queue-empty">
+          <p>La cola está vacía</p>
+          <p class="queue-empty-sub">Haz clic en + para añadir canciones</p>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <!-- Player Bar -->
+  <footer class="player-bar" id="playerBar">
+    <!-- Now Playing -->
+    <div class="now-playing">
+      <div class="now-playing-thumb" id="nowPlayingThumb">
+        <div class="thumb-placeholder">
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M9 19V6l12-3v13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="6" cy="19" r="3" stroke="currentColor" stroke-width="2"/>
+            <circle cx="18" cy="16" r="3" stroke="currentColor" stroke-width="2"/>
+          </svg>
+        </div>
+        <img id="nowPlayingImg" src="" alt="" style="display:none" />
+      </div>
+      <div class="now-playing-info">
+        <p class="now-playing-title" id="nowPlayingTitle">Sin reproducir</p>
+        <p class="now-playing-artist" id="nowPlayingArtist">—</p>
+      </div>
+      <div class="now-playing-actions">
+        <button id="heartBtn" class="btn-icon" title="Añadir a favoritos">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" stroke="currentColor" stroke-width="2"/></svg>
+        </button>
+        <button id="addToPlaylistBtn" class="btn-icon" title="Añadir a playlist">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div class="equalizer" id="equalizer">
+        <span></span><span></span><span></span><span></span>
+      </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="player-controls">
+      <div class="control-buttons">
+        <div class="control-group control-group-left">
+          <button class="btn-control btn-control-auto" id="autoBtn" title="Auto-Queue">
+            <svg viewBox="0 0 24 24" fill="none">
+              <path d="M13 10V3L4 14h7v7l9-11h-7z" fill="currentColor"/>
+            </svg>
+            <span>AUTO</span>
+          </button>
+          <button class="btn-control" id="shuffleBtn" title="Aleatorio">
+            <svg viewBox="0 0 24 24" fill="none">
+              <path d="M2 18h1.4c1.2 0 2.3-.5 3.1-1.4L10 13M2 6h1.4c1.2 0 2.3.5 3.1 1.4l9 9.2c.8.9 1.9 1.4 3.1 1.4H20M14 6h6m0 0-3-3m3 3-3 3M20 18h-6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <button class="btn-control" id="prevBtn" title="Anterior">
+            <svg viewBox="0 0 24 24" fill="none">
+              <path d="M19 20L9 12l10-8v16zM5 4v16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+        </div>
+        <button class="btn-play" id="playBtn" title="Play/Pause">
+          <svg class="icon-play" viewBox="0 0 24 24" fill="none">
+            <polygon points="5,3 19,12 5,21" fill="currentColor"/>
+          </svg>
+          <svg class="icon-pause" viewBox="0 0 24 24" fill="none" style="display:none">
+            <rect x="6" y="4" width="4" height="16" fill="currentColor"/>
+            <rect x="14" y="4" width="4" height="16" fill="currentColor"/>
+          </svg>
+          <div class="play-spinner" id="playSpinner" style="display:none"></div>
+        </button>
+        <div class="control-group control-group-right">
+          <button class="btn-control" id="nextBtn" title="Siguiente">
+            <svg viewBox="0 0 24 24" fill="none">
+              <path d="M5 4l10 8-10 8V4zM19 4v16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <button class="btn-control" id="repeatBtn" title="Repetir">
+            <svg viewBox="0 0 24 24" fill="none">
+              <path d="M17 1l4 4-4 4M3 11V9a4 4 0 0 1 4-4h14M7 23l-4-4 4-4M21 13v2a4 4 0 0 1-4 4H3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span class="repeat-one-badge" style="display:none">1</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Progress Bar -->
+      <div class="progress-container">
+        <span class="time-label" id="currentTime">0:00</span>
+        <div class="progress-bar" id="progressBar">
+          <div class="progress-fill" id="progressFill"></div>
+          <div class="progress-thumb" id="progressThumb"></div>
+        </div>
+        <span class="time-label" id="totalTime">0:00</span>
+      </div>
+    </div>
+
+    <!-- Volume -->
+    <div class="volume-section">
+      <button class="btn-icon" id="volMinusBtn" title="Bajar Volumen">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+      <button class="btn-icon" id="muteBtn" title="Silenciar">
+        <svg id="volIcon" viewBox="0 0 24 24" fill="none">
+          <polygon points="11,5 6,9 2,9 2,15 6,15 11,19" fill="currentColor"/>
+          <path d="M15.54 8.46a5 5 0 0 1 0 7.07M19.07 4.93a10 10 0 0 1 0 14.14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <div class="volume-slider-wrap">
+        <div class="volume-bar" id="volumeBar">
+          <div class="volume-fill" id="volumeFill" style="width:80%"></div>
+          <div class="volume-thumb" id="volumeThumb" style="left:80%"></div>
+        </div>
+      </div>
+      <button class="btn-icon" id="volPlusBtn" title="Subir Volumen">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+      <div class="sidebar-toggles">
+        <button class="btn-icon active" id="playlistToggleBtn" title="Playlists">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M8 6h13M8 12h13M8 18h7M3 6h.01M3 12h.01M3 18h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button class="btn-icon queue-toggle active" id="queueToggleBtn" title="Cola de reproducción">
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M3 6h15M3 12h15M3 18h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Hidden audio element -->
+  <audio id="audioPlayer"></audio>
+
+  <button id="reopenRepairBtn" class="reopen-repair-fab" type="button" style="display:none">
+    Reabrir reparacion
+  </button>
+
+  <!-- Repair Modal -->
+  <div class="modal-overlay" id="repairModal" style="display:none">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Reparador de Playlist</h3>
+        <button class="btn-close-modal" id="closeRepairModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="repairStatus" class="selectable-text">Analizando playlist...</div>
+        <div class="repair-progress-bar"><div id="repairProgressFill"></div></div>
+        <div id="repairLog" class="selectable-text"></div>
+        <div id="repairRenamedSummary" class="repair-renamed-summary" style="display:none">
+          <button id="openRenamedListBtn" class="repair-renamed-link" type="button">
+            <strong id="repairRenamedCount">0 canciones</strong> fueron cambiadas
+          </button>
+        </div>
+        <div id="repairBrokenSummary" class="repair-broken-summary" style="display:none">
+          <span id="repairBrokenCount">0 canciones caídas</span>
+          <button id="startBrokenRepairBtn" class="btn-primary repair-start-btn" type="button">Comenzar reparación</button>
+        </div>
+        <div class="repair-retry-container" id="repairRetryButtons" style="display:none">
+          <button class="retry-src-btn" id="retryTechRobo" data-method="techrobo" disabled>1. TechRobo</button>
+          <button class="retry-src-btn" id="retryFilmot" data-method="filmot" disabled>2. Filmot</button>
+          <button class="retry-src-btn" id="retryWayback" data-method="wayback" disabled>3. Wayback</button>
+        </div>
+        
+        <div id="recoveryArea" style="display:none">
+          <div class="broken-song-comparison">
+            <div class="comparison-column">
+              <span class="comp-label">Título Original:</span>
+              <strong id="brokenSongTitleOld" class="comp-value old-value">Cargando...</strong>
+            </div>
+            <div class="comparison-arrow">→</div>
+            <div class="comparison-column">
+              <span class="comp-label">Título Recuperado:</span>
+              <strong id="brokenSongTitleNew" class="comp-value new-value">Cargando...</strong>
+            </div>
+          </div>
+          <div class="candidates-area">
+            <p>Candidatos encontrados (puedes previsualizarlos antes de elegir):</p>
+            <div id="candidatesGrid" class="candidates-grid"></div>
+          </div>
+          <div class="manual-input-area">
+            <p>O introduce el enlace manualmente:</p>
+            <div class="input-group">
+              <input type="text" id="manualUrlInput" placeholder="URL de YouTube..." />
+              <button id="submitManualUrl">Usar</button>
+              <button id="skipRecoveryBtn">Omitir</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Renamed Titles Modal -->
+  <div class="modal-overlay" id="renamedTitlesModal" style="display:none">
+    <div class="modal-content modal-lg">
+      <div class="modal-header">
+        <h3>Titulos actualizados</h3>
+        <button class="btn-close-modal" id="closeRenamedTitlesModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="renamedTitlesMeta" class="selectable-text"></div>
+        <div id="renamedTitlesList" class="renamed-titles-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirmation Modal -->
+  <div class="modal-overlay" id="confirmModal" style="display:none">
+    <div class="modal-content modal-sm">
+      <div class="modal-header">
+        <h3>Confirmar acción</h3>
+        <button class="btn-close-modal" id="closeConfirmModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p id="confirmMessage">¿Estás seguro?</p>
+        <div class="modal-footer">
+          <button id="cancelConfirmBtn" class="btn-secondary">Cancelar</button>
+          <button id="okConfirmBtn" class="btn-primary">Confirmar</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Playlist Selection Modal -->
+  <div class="modal-overlay" id="playlistSelectModal" style="display:none">
+    <div class="modal-content modal-sm">
+      <div class="modal-header">
+        <h3>Añadir a Playlist</h3>
+        <button class="btn-close-modal" id="closePlaylistSelectModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="playlistSelectList" class="playlist-select-list">
+          <!-- Dynamic playlist list -->
+        </div>
+        <div class="modal-footer">
+          <button id="cancelPlaylistSelectBtn" class="btn-secondary">Cancelar</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Now Playing Screen (Full View) -->
+  <div class="now-playing-screen" id="nowPlayingScreen" style="display:none">
+    <div class="np-background" id="npBackground"></div>
+    <div class="np-header">
+      <button id="closeNowPlayingBtn" class="btn-icon">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M19 9l-7 7-7-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <span class="np-header-title">Reproduciendo ahora</span>
+    </div>
+    <div class="np-content">
+      <div class="np-artwork-container">
+        <img id="npArtwork" src="" alt="Album Art" />
+      </div>
+      <div class="np-info">
+        <h1 id="npTitle" class="selectable-title">Título de la canción</h1>
+        <h2 id="npArtist" class="selectable-artist">Artista</h2>
+        <div class="np-progress-section">
+            <div class="np-time-labels">
+              <span id="npCurrentTime">0:00</span>
+              <span id="npTotalTime">0:00</span>
+            </div>
+            <div class="np-progress-bar" id="npProgressBar">
+                <div class="np-progress-fill" id="npProgressFill"></div>
+            </div>
+        </div>
+        <div class="np-controls">
+            <button class="btn-np-control" id="npPrevBtn"><svg viewBox="0 0 24 24"><path d="M19 20L9 12l10-8v16zM5 4v16" fill="currentColor"/></svg></button>
+            <button class="btn-np-play" id="npPlayBtn">
+                <svg class="icon-play" viewBox="0 0 24 24"><polygon points="5,3 19,12 5,21" fill="currentColor"/></svg>
+                <svg class="icon-pause" viewBox="0 0 24 24" style="display:none"><rect x="6" y="4" width="4" height="16" fill="currentColor"/><rect x="14" y="4" width="4" height="16" fill="currentColor"/></svg>
+            </button>
+            <button class="btn-np-control" id="npNextBtn"><svg viewBox="0 0 24 24"><path d="M5 4l10 8-10 8V4zM19 4v16" fill="currentColor"/></svg></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sync Modal -->
+  <div class="modal-overlay" id="syncModal" style="display:none">
+    <div class="modal-content modal-lg">
+      <div class="modal-header">
+        <h3 id="syncModalTitle">Sincronizar Playlist</h3>
+        <button class="btn-close-modal" id="closeSyncModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="syncModalDesc" class="sync-desc">Comparando origen y destino...</div>
+        
+        <div class="sync-summary">
+          <div class="sync-summary-item">
+            <span class="sync-count" id="syncMatchCount">0</span>
+            <span class="sync-label">Permanecen iguales</span>
+          </div>
+        </div>
+
+        <div class="sync-groups">
+          <section class="sync-group" id="syncAddGroup">
+            <h4>Añadir al destino (<span id="syncAddCount">0</span>)</h4>
+            <div class="sync-list" id="syncAddList"></div>
+          </section>
+
+          <section class="sync-group" id="syncRemoveGroup">
+            <h4>Quitar del destino (<span id="syncRemoveCount">0</span>)</h4>
+            <div class="sync-list" id="syncRemoveList"></div>
+          </section>
+
+          <section class="sync-group" id="syncReplaceGroup" style="display:none">
+            <h4>Sustituciones sugeridas (<span id="syncReplaceCount">0</span>)</h4>
+            <div class="sync-list" id="syncReplaceList"></div>
+          </section>
+        </div>
+
+        <div class="modal-footer">
+          <button id="cancelSyncBtn" class="btn-secondary">Cancelar</button>
+          <button id="applySyncBtn" class="btn-primary">Aplicar Cambios</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="main.js"></script>
+</body>
+</html>
